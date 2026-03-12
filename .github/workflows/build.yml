@@ -1,0 +1,86 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4.2.2
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5.4.0
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install fyers-apiv3 pyotp pytz requests pandas customtkinter pyinstaller
+
+    - name: Run bundler
+      run: python bundler.py
+
+    - name: Build EXE
+      run: |
+        pyinstaller `
+          --onefile `
+          --windowed `
+          --name "FyersSectorMomentum" `
+          --hidden-import=fyers_apiv3 `
+          --hidden-import=fyers_apiv3.fyersModel `
+          --hidden-import=fyers_apiv3.FyersWebsocket `
+          --hidden-import=fyers_apiv3.FyersWebsocket.data_ws `
+          --hidden-import=fyers_apiv3.FyersWebsocket.order_ws `
+          --hidden-import=customtkinter `
+          --hidden-import=tkinter `
+          --hidden-import=tkinter.ttk `
+          --hidden-import=pyotp `
+          --hidden-import=pytz `
+          --hidden-import=requests `
+          --hidden-import=urllib3 `
+          --hidden-import=certifi `
+          --hidden-import=charset_normalizer `
+          --hidden-import=pandas `
+          --hidden-import=pandas._libs `
+          --hidden-import=pandas._libs.tslibs `
+          --hidden-import=websocket `
+          --hidden-import=websocket._core `
+          --hidden-import=websocket._exceptions `
+          --hidden-import=websocket._http `
+          --hidden-import=websocket._url `
+          --hidden-import=websocket._utils `
+          --hidden-import=ssl `
+          --hidden-import=socket `
+          --hidden-import=threading `
+          --collect-all fyers_apiv3 `
+          --collect-all customtkinter `
+          --collect-all websocket `
+          bundled_main.py
+      shell: pwsh
+
+    - name: Verify EXE
+      run: |
+        if (Test-Path "dist\FyersSectorMomentum.exe") {
+          Write-Host "EXE built successfully"
+          Get-Item "dist\FyersSectorMomentum.exe" | Select-Object Name, Length
+        } else {
+          Write-Host "EXE not found!"
+          exit 1
+        }
+      shell: pwsh
+
+    - name: Upload EXE artifact
+      uses: actions/upload-artifact@v4.6.2
+      with:
+        name: FyersSectorMomentum-Windows-EXE
+        path: dist\FyersSectorMomentum.exe
+        retention-days: 30
