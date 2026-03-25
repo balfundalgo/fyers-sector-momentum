@@ -15,7 +15,7 @@ FILES_IN_ORDER = [
     "fyers_connect.py",
     "fyers_token.py",
     "strategy.py",
-    "gui.py",          # LAST file - its __main__ block is kept
+    "gui.py",          # LAST file — its __main__ block is kept
 ]
 
 STRIP_PREFIXES = (
@@ -34,16 +34,13 @@ def strip_main_block(lines):
     in_main = False
     for line in lines:
         stripped = line.rstrip()
-        # Detect start of __main__ block
         if stripped in ('if __name__ == "__main__":', "if __name__ == '__main__':"):
             in_main = True
             continue
-        # If we are inside the __main__ block, skip indented lines
         if in_main:
             if stripped == "" or line.startswith("    ") or line.startswith("\t"):
                 continue
             else:
-                # Back to top-level code - exit main block
                 in_main = False
         result.append(line)
     return result
@@ -64,7 +61,7 @@ def bundle():
 
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
 
-        # Strip __main__ block from all files except the last (gui.py)
+        # Strip __main__ block from all files except gui.py
         if fname != last_file:
             lines = strip_main_block(lines)
 

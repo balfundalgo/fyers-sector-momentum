@@ -793,6 +793,17 @@ class SharedMarketDataSocket:
         self.feeds_by_symbol: Dict[str, LiveSymbolFeed] = {feed.symbol: feed for feed in feeds}
         self.socket            = None
         self.first_market_payload_seen = False
+        self.ltp_cache: Dict[str, float] = {}  # live LTP for ALL subscribed symbols (equity + F&O)
+
+    def subscribe_additional(self, symbols: List[str]) -> None:
+        """Subscribe extra symbols (e.g. option/future legs) after initial connect."""
+        if self.socket is None:
+            return
+        try:
+            self.socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+            print(f"[WS] Subscribed additional: {symbols}")
+        except Exception as e:
+            print(f"[WS WARN] Could not subscribe {symbols}: {e}")
 
     def on_connect(self) -> None:
         symbols = list(self.feeds_by_symbol.keys())
@@ -833,6 +844,19 @@ class SharedMarketDataSocket:
             msg_symbol = item.get("symbol") or item.get("n")
             if not msg_symbol:
                 continue
+            # Cache LTP for every symbol (equity AND F&O legs)
+            ltp_val = None
+            for k in ("ltp", "lp", "last_price"):
+                if k in item and item[k] is not None:
+                    try:
+                        ltp_val = float(item[k])
+                        break
+                    except Exception:
+                        pass
+            if ltp_val is not None:
+                self.ltp_cache[msg_symbol] = ltp_val
+                if ":" not in msg_symbol:
+                    self.ltp_cache[f"NSE:{msg_symbol}"] = ltp_val
             feed = self.feeds_by_symbol.get(msg_symbol)
             if feed is None and ":" not in msg_symbol:
                 feed = self.feeds_by_symbol.get(f"NSE:{msg_symbol}")
@@ -1528,10 +1552,27 @@ class SectorMomentumFyersStrategy:
                             runtime.has_traded = True
                             self.traded_stock_symbols.add(runtime.stock.symbol)
                             print(f"[DAY COUNT] Traded stocks today: {len(self.traded_stock_symbols)}/2")
+                            # Subscribe option/future legs to WS for live P&L
+                            if self.shared_socket and runtime.trade:
+                                leg_syms = [o.symbol for o in runtime.trade.paper_orders]
+                                if leg_syms:
+                                    self.shared_socket.subscribe_additional(leg_syms)
 
                     if runtime.trade and runtime.feed.last_price is not None:
                         active_trade_count += 1
                         self.position_mgr.update(runtime.trade, runtime.feed.last_price, now_ist())
+                        # ── Live unrealized P&L from WS tick cache ──────────
+                        if self.shared_socket and runtime.trade.paper_orders:
+                            live_pnl = 0.0
+                            all_priced = True
+                            for o in runtime.trade.paper_orders:
+                                ltp = self.shared_socket.ltp_cache.get(o.symbol)
+                                if ltp is not None and o.entry_ltp is not None:
+                                    live_pnl += (ltp - o.entry_ltp) * o.qty * o.side
+                                else:
+                                    all_priced = False
+                            if all_priced:
+                                print(f"[LIVE P&L] {runtime.stock.symbol} unrealized = ₹{live_pnl:+,.2f}")
                         if runtime.trade.exit_reason:
                             self.executor.on_exit(runtime.trade, runtime.trade.exit_price or runtime.feed.last_price, runtime.trade.exit_time or now_ist())
                             # ── P&L summary ──

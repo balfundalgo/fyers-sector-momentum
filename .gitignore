@@ -1,10 +1,10 @@
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
 dist/
 build/
+*.spec
 bundled_main.py
 cache/
-*.token
+*.log
 .env
-.DS_Store
-Thumbs.db

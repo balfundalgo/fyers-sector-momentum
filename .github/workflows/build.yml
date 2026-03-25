@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -16,7 +16,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4.2.2
 
-    - name: Set up Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v5.4.0
       with:
         python-version: '3.11'
@@ -24,63 +24,31 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install fyers-apiv3 pyotp pytz requests pandas customtkinter pyinstaller
+        pip install fyers-apiv3 customtkinter pyotp pytz requests pyinstaller
 
-    - name: Run bundler
+    - name: Bundle files
       run: python bundler.py
 
     - name: Build EXE
-      run: |
-        pyinstaller `
-          --onefile `
-          --windowed `
-          --name "FyersSectorMomentum" `
-          --hidden-import=fyers_apiv3 `
-          --hidden-import=fyers_apiv3.fyersModel `
-          --hidden-import=fyers_apiv3.FyersWebsocket `
-          --hidden-import=fyers_apiv3.FyersWebsocket.data_ws `
-          --hidden-import=fyers_apiv3.FyersWebsocket.order_ws `
-          --hidden-import=customtkinter `
-          --hidden-import=tkinter `
-          --hidden-import=tkinter.ttk `
-          --hidden-import=pyotp `
-          --hidden-import=pytz `
-          --hidden-import=requests `
-          --hidden-import=urllib3 `
-          --hidden-import=certifi `
-          --hidden-import=charset_normalizer `
-          --hidden-import=pandas `
-          --hidden-import=pandas._libs `
-          --hidden-import=pandas._libs.tslibs `
-          --hidden-import=websocket `
-          --hidden-import=websocket._core `
-          --hidden-import=websocket._exceptions `
-          --hidden-import=websocket._http `
-          --hidden-import=websocket._url `
-          --hidden-import=websocket._utils `
-          --hidden-import=ssl `
-          --hidden-import=socket `
-          --hidden-import=threading `
-          --collect-all fyers_apiv3 `
-          --collect-all customtkinter `
-          --collect-all websocket `
-          bundled_main.py
-      shell: pwsh
-
-    - name: Verify EXE
-      run: |
-        if (Test-Path "dist\FyersSectorMomentum.exe") {
-          Write-Host "EXE built successfully"
-          Get-Item "dist\FyersSectorMomentum.exe" | Select-Object Name, Length
-        } else {
-          Write-Host "EXE not found!"
-          exit 1
-        }
-      shell: pwsh
+      run: >
+        pyinstaller
+        --onefile
+        --windowed
+        --name FyersSectorMomentum
+        --hidden-import customtkinter
+        --hidden-import fyers_apiv3
+        --hidden-import fyers_apiv3.FyersWebsocket
+        --hidden-import fyers_apiv3.FyersWebsocket.data_ws
+        --hidden-import fyers_apiv3.FyersWebsocket.order_ws
+        --hidden-import pyotp
+        --hidden-import pytz
+        --collect-all customtkinter
+        --collect-all fyers_apiv3
+        bundled_main.py
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4.6.2
       with:
         name: FyersSectorMomentum-Windows-EXE
-        path: dist\FyersSectorMomentum.exe
+        path: dist/FyersSectorMomentum.exe
         retention-days: 30
