@@ -212,7 +212,27 @@ def pct_change(curr: float, prev: float) -> float:
 
 
 def norm_symbol_base(symbol: str) -> str:
-    return symbol.split(":")[-1].split("-")[0].upper()
+    """Extract the base ticker from any symbol form.
+
+    Handles hyphenated names like BAJAJ-AUTO correctly by stripping known
+    suffixes (-EQ, -INDEX, FO date codes) rather than blindly splitting at '-'.
+
+    Examples:
+        NSE:BAJAJ-AUTO-EQ           -> BAJAJ-AUTO
+        NSE:BAJAJ-AUTO26MAR8900CE-EQ -> BAJAJ-AUTO
+        NSE:HCLTECH26MAR1200CE-EQ   -> HCLTECH
+        NSE:NIFTY50-INDEX           -> NIFTY50
+        BAJAJ-AUTO                  -> BAJAJ-AUTO
+    """
+    s = symbol.split(":")[-1].upper()
+    s = re.sub(r"-EQ$", "", s)
+    s = re.sub(r"-INDEX$", "", s)
+    # Strip FO date suffix: e.g. 26MAR8900CE, 26MAR, 26MARFUT
+    s = re.sub(r"\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC).*$", "", s)
+    # Also handle space-separated dates from description: "BAJAJ-AUTO 30 Mar 26 8900 CE"
+    s = re.sub(r"\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC).*$",
+               "", s.strip(), flags=re.IGNORECASE)
+    return s.strip()
 
 
 # ============================================================================
@@ -414,6 +434,23 @@ class InstrumentMaster:
             print("[MASTER WARN] CE/PE count is 0 — option resolver WILL fail. "
                   "Check that NSE_FO.csv columns match expected fieldnames above.")
 
+    def fo_eligible_bases(self) -> set:
+        """
+        Return the set of base tickers that have active FO contracts in the loaded
+        symbol master. This replaces the hardcoded FO_ELIGIBLE set with live data.
+
+        A stock is considered FO-eligible if it has at least one FUT row in the master.
+        Using FUT (not CE/PE) as the check because futures are the definitive indicator
+        that a stock is in the F&O segment — every F&O stock has a FUT contract.
+        """
+        if not self.available:
+            return set()
+        return {
+            r["base"]
+            for r in self.parsed_rows
+            if r["instrument_type"] == "FUT" and r["base"] and r["fyers_symbol"]
+        }
+
     def _infer_instrument_type(self, symbol: str, raw_type: str) -> str:
         """
         FIX: Fyers NSE_FO.csv description column uses space-separated option type,
@@ -468,9 +505,18 @@ class InstrumentMaster:
         if underlying:
             return norm_symbol_base(underlying)
         sym = symbol.split(":")[-1].upper()
-        sym = re.sub(r'-EQ$', '', sym)
-        sym = re.sub(r'\d{2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}.*$', '', sym)
-        return sym.split("-")[0]
+        sym = re.sub(r"-EQ$", "", sym)
+        sym = re.sub(r"-INDEX$", "", sym)
+        # Strip compact FO date suffix (fyers_symbol format: no spaces)
+        # e.g. "BAJAJ-AUTO26MAR11800CE" → "BAJAJ-AUTO"
+        #      "M&M26MARFUT"            → "M&M"
+        sym = re.sub(r"\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC).*$", "", sym)
+        # Strip spaced FO date suffix (description format, Windows CSV only has 11 columns
+        # so underlying is empty and we fall back to the description string)
+        # e.g. "BAJAJ-AUTO 30 MAR 26 11800 CE" → "BAJAJ-AUTO"
+        #      "M&M 28 APR 26 FUT"              → "M&M"
+        sym = re.sub(r"\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC).*$", "", sym)
+        return sym.strip()
 
     def _normalize_row(self, row: Dict[str, str]) -> Dict[str, Any]:
         display_symbol = self._pick(row, "description", "display_name", "symbol_desc", "symbol", "trading_symbol", "tradingsymbol")
@@ -523,7 +569,7 @@ class InstrumentMaster:
         lot        = int(self._safe_float(lot_raw) or 1)
 
         normalized = {
-            "base":             self._infer_base(display_symbol or fyers_symbol, underlying),
+            "base":             self._infer_base(fyers_symbol or display_symbol, underlying),
             "fyers_symbol":     fyers_symbol,
             "display_symbol":   display_symbol,
             "instrument_type":  itype,
@@ -541,7 +587,24 @@ class InstrumentMaster:
             )
         base      = base_symbol.upper()
         base_rows = [r for r in self.parsed_rows if r["base"] == base and r["fyers_symbol"]]
+
+        # ── Safety net: description prefix scan ─────────────────────────────────────
+        # The primary fix is using fyers_symbol in _infer_base (no spaces → regex
+        # always strips correctly). This scan fires only if somehow base still misses.
         if not base_rows:
+            prefix = (base + " ").upper()
+            base_rows = [
+                r for r in self.parsed_rows
+                if r["fyers_symbol"] and r.get("display_symbol", "").upper().startswith(prefix)
+            ]
+            if base_rows:
+                print(f"[RESOLVER] Fallback description scan matched {base}: {len(base_rows)} rows")
+
+        if not base_rows:
+            # ── Diagnostic: show what bases ARE available (helps debug expiry/naming issues) ──
+            all_bases = sorted({r["base"] for r in self.parsed_rows if r["fyers_symbol"]})
+            similar   = [b for b in all_bases if b.startswith(base[:3])]
+            print(f"[RESOLVER DIAG] '{base}' not found. Similar bases: {similar or all_bases[:10]}")
             raise RuntimeError(f"No master rows found for {base}")
 
         today    = now_ist().date()
@@ -961,9 +1024,10 @@ def load_sector_constituents(sector_name: str, cache_days: int) -> List[str]:
 
 
 class StrategyPhases:
-    def __init__(self, broker: FyersBroker, cfg: StrategyConfig) -> None:
-        self.broker = broker
-        self.cfg    = cfg
+    def __init__(self, broker: FyersBroker, cfg: StrategyConfig, master: "InstrumentMaster") -> None:
+        self.broker         = broker
+        self.cfg            = cfg
+        self.broker_master  = master  # used for live FO eligibility check
 
     def identify_day_trend(self, session_date: datetime) -> str:
         start   = dt_ist(session_date.year, session_date.month, session_date.day, *self.cfg.trend_window_start)
@@ -994,9 +1058,15 @@ class StrategyPhases:
         fyers_symbols = [f"NSE:{s}-EQ" for s in stocks]
         quote_map     = self.broker.quotes(fyers_symbols)
 
+        # Use the live symbol master to determine FO eligibility — more accurate
+        # than the hardcoded FO_ELIGIBLE set which goes stale as NSE adds/removes stocks.
+        # Falls back to the hardcoded set only if master is not loaded.
+        live_fo_bases = self.broker_master.fo_eligible_bases() if hasattr(self, "broker_master") else set()
+        fo_check      = live_fo_bases if live_fo_bases else FO_ELIGIBLE
+
         candidates: List[SelectedStock] = []
         for s in stocks:
-            if s not in FO_ELIGIBLE:
+            if s not in fo_check:
                 continue
             fy = f"NSE:{s}-EQ"
             q  = quote_map.get(fy)
@@ -1165,8 +1235,9 @@ class ExecutionRouter:
             return self.master.resolve(stock.symbol, entry_price, direction, self.cfg.qty_option_lots, self.cfg.qty_future_lots)
         except Exception as e:
             print(f"[RESOLVER WARN] {e}")
-            print("[RESOLVER WARN] Falling back to single stock-equity proxy leg. Set a valid FO symbol-master CSV for exact ATM option + future legs.")
-            return [ResolvedLeg(name="stock_equity", symbol=stock.fyers_symbol, side=(1 if direction == "BULLISH" else -1), qty=1)]
+            print("[RESOLVER WARN] Falling back to stock-equity proxy leg (no FO contracts — possibly expiry day or symbol mismatch).")
+            proxy_qty = max(1, self.cfg.qty_option_lots)
+            return [ResolvedLeg(name="stock_equity", symbol=stock.fyers_symbol, side=(1 if direction == "BULLISH" else -1), qty=proxy_qty)]
 
     def enter(self, stock: SelectedStock, direction: str, entry_price: float, stop_loss: float) -> TradeState:
         sl_dist = abs(entry_price - stop_loss)
@@ -1402,7 +1473,7 @@ class SectorMomentumFyersStrategy:
         self.order_tracker = None if self.cfg.paper_trading or not self.cfg.enable_order_socket_in_live_mode else OrderSocketTracker(self.broker.access_token)
         if self.cfg.paper_trading:
             print("[MODE] Paper mode enabled. No real broker orders will be placed.")
-        self.phases       = StrategyPhases(self.broker, self.cfg)
+        self.phases       = StrategyPhases(self.broker, self.cfg, self.master)
         self.executor     = ExecutionRouter(self.broker, self.cfg, self.master, self.order_tracker)
         self.position_mgr = PositionManager(self.cfg)
         self.trend:              Optional[str]              = None
