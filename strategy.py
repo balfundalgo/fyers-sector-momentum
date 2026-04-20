@@ -66,7 +66,9 @@ class StrategyConfig:
     enable_order_socket_in_live_mode: bool = True
     entry_cutoff_time: Tuple[int, int] = (14, 55)
     use_breakout_confirmation: bool = True   # if True: wait for live price to breach min/max of 2 confirmed candles
-    breakout_buffer_points: float = 1.0      # points beyond min/max before entry fires (e.g. 1.0 means 1 point below lowest low)
+    breakout_buffer_pct: float = 0.1         # entry buffer as % of spot price (e.g. 0.1 means 0.1% of spot below lowest low)
+    sl_buffer_pct: float = 0.1              # SL buffer as % of entry price (e.g. 0.1 means price must go 0.1% beyond SL to trigger)
+    max_trades_per_day: int = 2              # maximum number of stocks to trade per session
 
 
 SECTORAL_INDICES: Dict[str, str] = {
@@ -162,6 +164,7 @@ class TradeState:
     take_profit: float
     entry_time: datetime
     trailing_armed: bool = False
+    trail_step_count: int = 0          # how many 0.5% steps have fired so far
     live_order_ids: List[str] = field(default_factory=list)
     legs: List[ResolvedLeg] = field(default_factory=list)
     paper_orders: List[PaperOrder] = field(default_factory=list)
@@ -235,9 +238,26 @@ def norm_symbol_base(symbol: str) -> str:
     return s.strip()
 
 
-# ============================================================================
-# BROKER / DATA LAYER
-# ============================================================================
+# ── Symbol alias map ──────────────────────────────────────────────────────────
+# Maps constituent ticker names (as downloaded from niftyindices.com) to the
+# actual NSE F&O base symbol used in the symbol master CSV.
+# This is needed because some companies trade under a different NSE ticker than
+# their common name — e.g. Macrotech Developers is listed as LODHA on NSE but
+# the constituent CSV from niftyindices.com uses "MACROTECH".
+# Add new entries here whenever a mismatch is discovered.
+CONSTITUENT_ALIAS_MAP: Dict[str, str] = {
+    "MACROTECH":  "LODHA",        # Macrotech Developers → NSE ticker LODHA
+    "LODHA":      "LODHA",        # already correct
+    "ABREL":      "ABREL",        # Aditya Birla Real Estate
+    "ANANTRAJ":   "ANANTRAJ",     # Anant Raj
+    "PHOENIXLTD": "PHOENIXLTD",   # Phoenix Mills
+    "M&M":        "M&M",          # Mahindra & Mahindra (hyphen)
+    "BAJAJ-AUTO": "BAJAJ-AUTO",   # Bajaj Auto (hyphen)
+}
+
+# Reverse map: NSE F&O base → constituent ticker (for FO eligibility check)
+_FO_BASE_TO_CONSTITUENT: Dict[str, str] = {v: k for k, v in CONSTITUENT_ALIAS_MAP.items()}
+
 class FyersBroker:
     def __init__(self, access_token: Optional[str] = None) -> None:
         raw_token = access_token or generate_token()
@@ -282,13 +302,19 @@ class FyersBroker:
             key = item.get("n") or item.get("symbol")
             v = item.get("v", {}) if isinstance(item.get("v"), dict) else {}
             if key:
+                bid = float(v.get("bid_price", v.get("bid", 0.0)) or 0.0)
+                ask = float(v.get("ask_price", v.get("ask", 0.0)) or 0.0)
                 out[key] = {
-                    "ltp": float(v.get("lp", v.get("ltp", 0.0)) or 0.0),
+                    "ltp":        float(v.get("lp", v.get("ltp", 0.0)) or 0.0),
+                    "bid":        bid,
+                    "ask":        ask,
+                    "is_liquid":  bid > 0 and ask > 0,
+                    "mid":        (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0,
                     "prev_close": float(v.get("prev_close_price", v.get("prevClose", 0.0)) or 0.0),
-                    "open": float(v.get("open_price", v.get("open", 0.0)) or 0.0),
-                    "high": float(v.get("high_price", v.get("high", 0.0)) or 0.0),
-                    "low": float(v.get("low_price", v.get("low", 0.0)) or 0.0),
-                    "raw": item,
+                    "open":       float(v.get("open_price", v.get("open", 0.0)) or 0.0),
+                    "high":       float(v.get("high_price", v.get("high", 0.0)) or 0.0),
+                    "low":        float(v.get("low_price", v.get("low", 0.0)) or 0.0),
+                    "raw":        item,
                 }
         return out
 
@@ -309,6 +335,35 @@ class FyersBroker:
             "isSliceOrder": False,
         }
         return self.fyers.place_order(payload)
+
+    def close_live_position(self, leg: 'ResolvedLeg', reason: str) -> bool:
+        """
+        Close a live leg by placing a market order in the opposite direction.
+        Returns True if the order was accepted, False on failure.
+
+        Entry side:  1 = BUY  → exit side: -1 = SELL
+        Entry side: -1 = SELL → exit side:  1 = BUY
+        """
+        exit_side    = -1 * leg.side
+        side_txt     = "SELL" if exit_side == -1 else "BUY"
+        try:
+            resp = self.place_market_order(
+                symbol       = leg.symbol,
+                side         = exit_side,
+                qty          = leg.qty,
+                product_type = leg.product_type,
+            )
+            status = resp.get("s", "")
+            oid    = resp.get("id") or resp.get("orderId") or ""
+            if status == "ok":
+                print(f"[LIVE EXIT] {reason} | {side_txt} {leg.symbol} x{leg.qty} → order_id={oid}")
+                return True
+            else:
+                print(f"[LIVE EXIT ERROR] {side_txt} {leg.symbol} x{leg.qty} failed: {resp}")
+                return False
+        except Exception as e:
+            print(f"[LIVE EXIT ERROR] {side_txt} {leg.symbol} x{leg.qty} exception: {e}")
+            return False
 
 
 # ============================================================================
@@ -579,7 +634,45 @@ class InstrumentMaster:
         }
         return normalized
 
-    def resolve(self, base_symbol: str, spot_price: float, direction: str, opt_lots: int, fut_lots: int) -> List[ResolvedLeg]:
+    def _pick_liquid_strike(self, candidates: List[Dict], broker: Optional['FyersBroker'], opt_type: str) -> Dict:
+        """
+        Walk the candidate strikes (sorted closest-to-spot first) and return the
+        first one that has a live bid AND ask (i.e. is actually tradeable right now).
+
+        Checks up to 5 nearest strikes. If none are liquid (e.g. very early morning,
+        illiquid stock) falls back to ATM with a warning so we don't block the trade.
+
+        broker=None means no liquidity check — just return ATM directly.
+        """
+        if broker is None:
+            return candidates[0]
+
+        MAX_STRIKES_TO_CHECK = 5
+        for row in candidates[:MAX_STRIKES_TO_CHECK]:
+            sym = row["fyers_symbol"]
+            try:
+                q = broker.quotes([sym])
+                d = q.get(sym, {})
+                bid = float(d.get("bid") or 0.0)
+                ask = float(d.get("ask") or 0.0)
+                if bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2
+                    print(f"[RESOLVER] Liquid {opt_type} strike: {sym}  bid={bid:.2f}  ask={ask:.2f}  mid={mid:.2f}")
+                    return row
+                else:
+                    strike = row.get("strike", "?")
+                    print(f"[RESOLVER] Illiquid {opt_type} strike {strike} ({sym})  bid={bid}  ask={ask} — skipping")
+            except Exception as e:
+                print(f"[RESOLVER] Quote check failed for {sym}: {e}")
+
+        # All checked strikes are illiquid — fall back to ATM and warn
+        atm = candidates[0]
+        print(f"[RESOLVER WARN] No liquid {opt_type} strike found in top {MAX_STRIKES_TO_CHECK} — "
+              f"falling back to ATM {atm['fyers_symbol']} (may be stale LTP)")
+        return atm
+
+    def resolve(self, base_symbol: str, spot_price: float, direction: str, opt_lots: int, fut_lots: int,
+                broker: Optional['FyersBroker'] = None) -> List[ResolvedLeg]:
         if not self.available:
             raise RuntimeError(
                 "Symbol master CSV not loaded. Set StrategyConfig.symbol_master_csv_path "
@@ -629,7 +722,8 @@ class InstrumentMaster:
             raise RuntimeError(f"No matching option contracts found for {base} on nearest expiry")
 
         typed.sort(key=lambda x: (abs(float(x["strike"]) - spot_price), float(x["strike"]), x["display_symbol"]))
-        atm = typed[0]
+        opt_type = "PE" if direction == "BULLISH" else "CE"
+        atm = self._pick_liquid_strike(typed, broker, opt_type)
 
         option_side  = 1                                    # always BUY the option (PE for bullish, CE for bearish)
         future_side  = 1 if direction == "BULLISH" else -1  # BUY FUT for bullish, SELL FUT for bearish
@@ -1066,8 +1160,15 @@ class StrategyPhases:
 
         candidates: List[SelectedStock] = []
         for s in stocks:
-            if s not in fo_check:
+            # ── Alias resolution ─────────────────────────────────────────────
+            # The constituent ticker from niftyindices.com may differ from the
+            # NSE F&O base in the symbol master. Check both the original ticker
+            # and any known alias so we don't miss eligible stocks.
+            fo_ticker = CONSTITUENT_ALIAS_MAP.get(s, s)
+            if fo_ticker not in fo_check and s not in fo_check:
                 continue
+            # Use whichever ticker is confirmed in F&O
+            effective_ticker = fo_ticker if fo_ticker in fo_check else s
             fy = f"NSE:{s}-EQ"
             q  = quote_map.get(fy)
             if not q:
@@ -1075,7 +1176,7 @@ class StrategyPhases:
             chg = pct_change(q["ltp"], q["prev_close"])
             if abs(chg) > self.cfg.max_stock_move_pct:
                 continue
-            candidates.append(SelectedStock(sector_name=sector_name, symbol=s, fyers_symbol=fy, pct_change=chg, ltp=q["ltp"]))
+            candidates.append(SelectedStock(sector_name=sector_name, symbol=effective_ticker, fyers_symbol=fy, pct_change=chg, ltp=q["ltp"]))
 
         if not candidates:
             raise RuntimeError(f"No eligible stock found for {sector_name}")
@@ -1167,22 +1268,50 @@ class PaperLedger:
         self.broker  = broker
         self.counter = 0
 
-    def _fetch_ltp(self, symbol: str) -> Optional[float]:
-        """Fetch live LTP for a single F&O symbol via quotes API."""
+    def _fetch_entry_price(self, symbol: str) -> Optional[float]:
+        """
+        Fetch a realistic entry price for a symbol.
+
+        Priority:
+          1. (bid + ask) / 2  — if bid > 0 AND ask > 0 (live, liquid market)
+          2. ltp              — last traded price (may be stale for illiquid options)
+          3. None             — if quotes API fails entirely
+
+        Using the bid/ask midpoint avoids the BOSCHLTD-style bug where the API
+        returns a stale LTP from the previous session for an option that has had
+        no trades yet in the current session.
+        """
         try:
             q = self.broker.quotes([symbol])
-            ltp = q.get(symbol, {}).get('ltp')
-            return float(ltp) if ltp else None
+            d = q.get(symbol, {})
+            bid = float(d.get("bid") or 0.0)
+            ask = float(d.get("ask") or 0.0)
+            ltp = float(d.get("ltp") or 0.0) or None
+
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2
+                print(f"[LTP] {symbol}  bid={bid:.2f}  ask={ask:.2f}  mid={mid:.2f}  ltp={ltp}  → using MID (liquid)")
+                return mid
+            elif ltp:
+                print(f"[LTP] {symbol}  bid={bid}  ask={ask}  ltp={ltp:.2f}  → using LTP (illiquid/stale warning)")
+                return ltp
+            else:
+                print(f"[LTP WARN] {symbol}  bid=0  ask=0  ltp=0 — no price available")
+                return None
         except Exception as e:
-            print(f"[LTP WARN] Could not fetch live LTP for {symbol}: {e}")
+            print(f"[LTP WARN] Could not fetch quote for {symbol}: {e}")
             return None
+
+    def _fetch_ltp(self, symbol: str) -> Optional[float]:
+        """Alias kept for exit-side calls (exit LTP still uses best available price)."""
+        return self._fetch_entry_price(symbol)
 
     def open_orders(self, legs: List[ResolvedLeg], ref_price: float) -> List[PaperOrder]:
         out: List[PaperOrder] = []
         for leg in legs:
             self.counter += 1
             paper_id  = f"PAPER-{self.counter:05d}"
-            entry_ltp = self._fetch_ltp(leg.symbol)
+            entry_ltp = self._fetch_entry_price(leg.symbol)   # mid price when liquid, LTP otherwise
             po        = PaperOrder(paper_id=paper_id, symbol=leg.symbol, side=leg.side,
                                    qty=leg.qty, entry_price=ref_price, entry_ltp=entry_ltp)
             out.append(po)
@@ -1232,7 +1361,7 @@ class ExecutionRouter:
 
     def resolve_execution_legs(self, stock: SelectedStock, direction: str, entry_price: float) -> List[ResolvedLeg]:
         try:
-            return self.master.resolve(stock.symbol, entry_price, direction, self.cfg.qty_option_lots, self.cfg.qty_future_lots)
+            return self.master.resolve(stock.symbol, entry_price, direction, self.cfg.qty_option_lots, self.cfg.qty_future_lots, broker=self.broker)
         except Exception as e:
             print(f"[RESOLVER WARN] {e}")
             print("[RESOLVER WARN] Falling back to stock-equity proxy leg (no FO contracts — possibly expiry day or symbol mismatch).")
@@ -1276,6 +1405,23 @@ class ExecutionRouter:
     def on_exit(self, trade: TradeState, exit_price: float, ts: datetime) -> None:
         if self.cfg.paper_trading:
             self.paper_ledger.close_orders(trade.paper_orders, exit_price, ts)
+        else:
+            # ── Live mode: place reverse market orders for every entry leg ──
+            # Each leg is closed with the opposite side to the original entry.
+            # We attempt all legs even if one fails — partial close is better
+            # than leaving all positions open.
+            reason = trade.exit_reason or "EXIT"
+            print(f"[LIVE EXIT] Closing {len(trade.legs)} leg(s) for {trade.symbol} | reason={reason}")
+            failed = []
+            for leg in trade.legs:
+                success = self.broker.close_live_position(leg, reason)
+                if not success:
+                    failed.append(leg.symbol)
+                time.sleep(0.2)   # small pause between legs to avoid rate limit
+            if failed:
+                print(f"[LIVE EXIT WARN] Failed to close: {failed} — check positions manually in Fyers!")
+            else:
+                print(f"[LIVE EXIT] All legs closed successfully for {trade.symbol}")
 
 
 # ============================================================================
@@ -1298,6 +1444,11 @@ class SetupTracker:
                                or  max(c1.high, c2.high) + buffer   (bullish)
                  locked_sl       = c2.high  (bearish) / c2.low  (bullish)
 
+             If 2nd candle FAILS range check (range > max_range_pct):
+               → Cooling-off state activated. All further candles beyond PDH/PDL
+                 are IGNORED until a candle closes back inside PDH/PDL.
+                 Only after that reset can a new Phase 1 begin.
+
     Phase 3  Live price monitoring via check_live_price().
              The moment last_price <= breakout_level (bearish)
                                or >= breakout_level (bullish)
@@ -1313,18 +1464,21 @@ class SetupTracker:
     def __init__(self, direction: str, pdh: float, pdl: float,
                  max_range_pct: float,
                  use_breakout_confirmation: bool = True,
-                 breakout_buffer_points: float = 1.0) -> None:
+                 breakout_buffer_pct: float = 0.1,
+                 sl_buffer_pct: float = 0.1) -> None:
         self.direction                = direction
         self.pdh                      = pdh
         self.pdl                      = pdl
         self.max_range_pct            = max_range_pct
         self.use_breakout_confirmation = use_breakout_confirmation
-        self.breakout_buffer_points   = breakout_buffer_points
+        self.breakout_buffer_pct      = breakout_buffer_pct
+        self.sl_buffer_pct            = sl_buffer_pct
         # phase state
         self.first: Optional[Candle]       = None
         self.setup_confirmed: bool         = False  # True once phase-2 done — never resets
         self.breakout_level: Optional[float] = None  # live-price trigger
         self.locked_sl: Optional[float]      = None  # SL locked at phase-2, never changes
+        self.needs_reset: bool             = False  # True after range rejection — price must return inside PDH/PDL before retrying
 
     def _bar_valid(self, bar: Candle) -> bool:
         """Phase 1/2: candle close beyond PDH/PDL."""
@@ -1351,8 +1505,16 @@ class SetupTracker:
         print(f"[CHECK] {bar.ts.strftime('%H:%M')} close={bar.close:.2f} is {relation} ref {ref:.2f}? {'YES' if self._bar_valid(bar) else 'NO'}")
 
         if not self._bar_valid(bar):
-            # Phase 1 reset — only before confirmation
+            # Candle closed back inside PDH/PDL boundary
             self.first = None
+            if self.needs_reset:
+                self.needs_reset = False
+                print(f"[SETUP] Cooling-off cleared — price returned inside {ref:.2f}. Ready for fresh setup.")
+            return None
+
+        # Candle is valid (beyond PDH/PDL) but we are in cooling-off state
+        if self.needs_reset:
+            # Price hasn't come back inside yet — ignore this candle entirely
             return None
 
         if self.first is None:
@@ -1363,28 +1525,36 @@ class SetupTracker:
 
         # Phase 2 — second consecutive candle
         if not self._range_valid(bar):
-            print("[SETUP] Second candle rejected. Range too large. Resetting.")
+            print("[SETUP] Second candle rejected. Range too large. Needs cooling-off — price must return inside PDH/PDL before retrying.")
             self.first = None
+            self.needs_reset = True
             return None
 
         # ── CONFIRMATION ─────────────────────────────────────────────────
         if self.use_breakout_confirmation:
+            # Entry buffer in points = % of 2nd candle close (spot proxy)
+            buffer_points = bar.close * self.breakout_buffer_pct / 100.0
             # Lock breakout level and SL — these never change after this point
             if self.direction == "BULLISH":
-                raw_level        = max(self.first.high, bar.high)
-                self.breakout_level = raw_level + self.breakout_buffer_points
-                self.locked_sl      = bar.low
+                raw_level           = max(self.first.high, bar.high)
+                self.breakout_level = raw_level + buffer_points
+                # SL = 2nd candle low minus sl_buffer% of that low
+                sl_buffer           = bar.low * self.sl_buffer_pct / 100.0
+                self.locked_sl      = bar.low - sl_buffer
             else:
-                raw_level        = min(self.first.low, bar.low)
-                self.breakout_level = raw_level - self.breakout_buffer_points
-                self.locked_sl      = bar.high
+                raw_level           = min(self.first.low, bar.low)
+                self.breakout_level = raw_level - buffer_points
+                # SL = 2nd candle high plus sl_buffer% of that high
+                sl_buffer           = bar.high * self.sl_buffer_pct / 100.0
+                self.locked_sl      = bar.high + sl_buffer
 
             self.setup_confirmed = True
             self.first = None
             print(f"[SETUP] ✅ Setup confirmed at {bar.ts.strftime('%H:%M')} | "
                   f"breakout_level={self.breakout_level:.2f} "
-                  f"(raw={raw_level:.2f} buffer={self.breakout_buffer_points}) | "
-                  f"locked_sl={self.locked_sl:.2f} | "
+                  f"(raw={raw_level:.2f} entry_buf={buffer_points:.2f}pts={self.breakout_buffer_pct}% of {bar.close:.2f}) | "
+                  f"locked_sl={self.locked_sl:.2f} "
+                  f"(sl_buf={sl_buffer:.2f}pts={self.sl_buffer_pct}% of {bar.high if self.direction == 'BEARISH' else bar.low:.2f}) | "
                   f"Monitoring live price now...")
             return None
 
@@ -1442,10 +1612,42 @@ class PositionManager:
                 return self._exit(trade, trade.take_profit, current_dt, "TP")
             move_pct = pct_change(trade.entry_price, last_price)
 
-        if not trade.trailing_armed and move_pct >= self.cfg.trailing_trigger_pct:
-            trade.trailing_armed = True
-            trade.stop_loss      = trade.entry_price
-            print(f"[TRAIL] Armed. SL moved to breakeven {trade.stop_loss:.2f}")
+        # ── Multi-step trailing SL ────────────────────────────────────────────
+        # step_size = entry × trailing_trigger_pct %
+        # Every time price crosses another full step, SL moves up by one step.
+        # Example (0.5% steps, entry=1348.20, step=6.74):
+        #   Price >= 1354.94 (+0.5%)  → SL = 1348.20 (breakeven)
+        #   Price >= 1361.68 (+1.0%)  → SL = 1354.94 (+0.5% from entry)
+        #   Price >= 1368.42 (+1.5%)  → SL = 1361.68 (+1.0% from entry)
+        step_size = trade.entry_price * self.cfg.trailing_trigger_pct / 100.0
+        if step_size > 0:
+            if trade.direction == "BULLISH":
+                steps_crossed = int(move_pct / self.cfg.trailing_trigger_pct)
+            else:
+                steps_crossed = int(move_pct / self.cfg.trailing_trigger_pct)
+
+            if steps_crossed > trade.trail_step_count:
+                # Advance SL by however many new steps price has crossed
+                for step in range(trade.trail_step_count + 1, steps_crossed + 1):
+                    if trade.direction == "BULLISH":
+                        new_sl = trade.entry_price + (step - 1) * step_size
+                    else:
+                        new_sl = trade.entry_price - (step - 1) * step_size
+
+                    # SL can only move in the favourable direction
+                    if trade.direction == "BULLISH":
+                        if new_sl > trade.stop_loss:
+                            trade.stop_loss = round(new_sl, 2)
+                            label = "breakeven" if step == 1 else f"+{(step-1)*self.cfg.trailing_trigger_pct:.1f}% from entry"
+                            print(f"[TRAIL] {trade.symbol} Step {step}: SL → {trade.stop_loss:.2f} ({label})")
+                    else:
+                        if new_sl < trade.stop_loss:
+                            trade.stop_loss = round(new_sl, 2)
+                            label = "breakeven" if step == 1 else f"-{(step-1)*self.cfg.trailing_trigger_pct:.1f}% from entry"
+                            print(f"[TRAIL] {trade.symbol} Step {step}: SL → {trade.stop_loss:.2f} ({label})")
+
+                trade.trail_step_count = steps_crossed
+                trade.trailing_armed   = True
 
         hh, mm  = self.cfg.force_exit_time
         cutoff  = current_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -1515,8 +1717,20 @@ class SectorMomentumFyersStrategy:
         ranked     = self.phases.rank_sectors(self.trend)
         if not ranked:
             raise RuntimeError("No sectors could be ranked")
-        self.selected_sector = ranked[0][0]
-        stocks               = self.phases.select_stocks(self.selected_sector, self.trend)
+
+        # Try sectors in ranked order — skip immediately to next if no eligible stocks
+        stocks = None
+        for sector_name, sector_chg in ranked:
+            try:
+                stocks = self.phases.select_stocks(sector_name, self.trend)
+                self.selected_sector = sector_name
+                break
+            except RuntimeError as e:
+                print(f"[SECTOR SKIP] {sector_name} skipped: {e}. Trying next sector...")
+                continue
+
+        if not stocks:
+            raise RuntimeError("No eligible stocks found in any ranked sector")
         self.stock_runtimes  = []
         if self.order_tracker is not None:
             self.order_tracker.start()
@@ -1528,7 +1742,8 @@ class SectorMomentumFyersStrategy:
                                      pdh=pdh, pdl=pdl,
                                      max_range_pct=self.cfg.second_candle_max_range_pct,
                                      use_breakout_confirmation=self.cfg.use_breakout_confirmation,
-                                     breakout_buffer_points=self.cfg.breakout_buffer_points)
+                                     breakout_buffer_pct=self.cfg.breakout_buffer_pct,
+                                     sl_buffer_pct=self.cfg.sl_buffer_pct)
                 feed           = LiveSymbolFeed(self.broker, self.broker.access_token, stock.fyers_symbol, max_history_rows=self.cfg.max_history_rows)
                 feed.start()
                 self.stock_runtimes.append(StockRuntime(stock=stock, pdh=pdh, pdl=pdl, setup_tracker=setup_tracker, feed=feed))
@@ -1553,7 +1768,7 @@ class SectorMomentumFyersStrategy:
         Phase 3 (live breakout) is handled separately in the main loop via check_live_price."""
         if runtime.trade or runtime.has_traded or runtime.is_complete:
             return
-        if len(self.traded_stock_symbols) >= 2:
+        if len(self.traded_stock_symbols) >= self.cfg.max_trades_per_day:
             return
         if not self._entry_allowed_now():
             print(f"[ENTRY BLOCKED] Entry cutoff reached for {runtime.stock.symbol}.")
@@ -1567,7 +1782,37 @@ class SectorMomentumFyersStrategy:
         runtime.trade  = self.executor.enter(runtime.stock, self.trend or "BULLISH", entry, sl)
         runtime.has_traded = True
         self.traded_stock_symbols.add(runtime.stock.symbol)
-        print(f"[DAY COUNT] Traded stocks today: {len(self.traded_stock_symbols)}/2")
+        print(f"[DAY COUNT] Traded stocks today: {len(self.traded_stock_symbols)}/{self.cfg.max_trades_per_day}")
+
+    def _replay_historical_5m_bars(self) -> None:
+        """
+        After bootstrap, replay ALL already-closed 5m candles for every runtime
+        in chronological order through on_new_5m_bar().
+
+        Why this is needed:
+        The strategy starts after 09:25 IST (to wait for the first 10-min NIFTY
+        candle). By the time bootstrap runs, the 09:15 and 09:20 stock candles
+        are already built in feed.closed_5m. The main live loop only ever looks
+        at closed_5m[-1] (the latest candle), so without this replay the 09:15
+        candle — which is candle-1 of the two-consecutive setup — is permanently
+        skipped. This causes the code to treat 09:20 as c1 and 09:25 as c2,
+        producing a wrong breakout level and missing the earliest valid setup.
+
+        After replay, last_5m_processed is set to the last replayed candle's ts,
+        so the main live loop will not re-process any of them.
+        """
+        print("[REPLAY] Replaying historical 5m candles for all stocks...")
+        for runtime in self.stock_runtimes:
+            if not runtime.feed.closed_5m:
+                continue
+            for bar in runtime.feed.closed_5m:
+                if runtime.is_complete or runtime.has_traded:
+                    break
+                print(f"[5M CLOSED] {runtime.stock.symbol} {bar.ts.strftime('%H:%M')} "
+                      f"O={bar.open:.2f} H={bar.high:.2f} L={bar.low:.2f} C={bar.close:.2f}")
+                self.on_new_5m_bar(runtime, bar)
+                runtime.last_5m_processed = bar.ts
+        print("[REPLAY] Historical replay complete.")
 
     def loop(self) -> None:
         if not self.wait_for_trading_window():
@@ -1594,6 +1839,11 @@ class SectorMomentumFyersStrategy:
                 print("[ERROR]", e)
                 time.sleep(2.0)
 
+        # Replay all candles already built during bootstrap (e.g. 09:15, 09:20)
+        # so that the two-consecutive-candle setup check starts from the very
+        # first candle of the day, not from whichever candle happens to be [-1].
+        self._replay_historical_5m_bars()
+
         while True:
             try:
                 active_trade_count = 0
@@ -1614,7 +1864,7 @@ class SectorMomentumFyersStrategy:
                             and not runtime.is_complete
                             and runtime.setup_tracker.setup_confirmed
                             and runtime.feed.last_price is not None
-                            and len(self.traded_stock_symbols) < 2
+                            and len(self.traded_stock_symbols) < self.cfg.max_trades_per_day
                             and self._entry_allowed_now()):
                         result = runtime.setup_tracker.check_live_price(runtime.feed.last_price)
                         if result is not None:
@@ -1622,7 +1872,7 @@ class SectorMomentumFyersStrategy:
                             runtime.trade      = self.executor.enter(runtime.stock, self.trend or "BULLISH", entry, sl)
                             runtime.has_traded = True
                             self.traded_stock_symbols.add(runtime.stock.symbol)
-                            print(f"[DAY COUNT] Traded stocks today: {len(self.traded_stock_symbols)}/2")
+                            print(f"[DAY COUNT] Traded stocks today: {len(self.traded_stock_symbols)}/{self.cfg.max_trades_per_day}")
                             # Subscribe option/future legs to WS for live P&L
                             if self.shared_socket and runtime.trade:
                                 leg_syms = [o.symbol for o in runtime.trade.paper_orders]
@@ -1656,7 +1906,7 @@ class SectorMomentumFyersStrategy:
                             print(f"[DONE] Trade cycle completed for {runtime.stock.symbol}.")
                             runtime.trade       = None
                             runtime.is_complete = True
-                if len(self.traded_stock_symbols) >= 2 and active_trade_count == 0:
+                if len(self.traded_stock_symbols) >= self.cfg.max_trades_per_day and active_trade_count == 0:
                     print("[DONE] Two stocks have traded. Day limit reached.")
                     print(f"[DAY SUMMARY] Total Day P&L = \u20b9{self.day_pnl:+,.2f}")
                     break
@@ -1667,6 +1917,12 @@ class SectorMomentumFyersStrategy:
                 time.sleep(self.cfg.poll_seconds_when_idle)
             except KeyboardInterrupt:
                 print("\n[STOPPED] User interrupted.")
+                # ── Close any open live positions on manual stop ──
+                if not self.cfg.paper_trading:
+                    for runtime in self.stock_runtimes:
+                        if runtime.trade and not runtime.trade.exit_reason:
+                            print(f"[LIVE EXIT] Emergency close for {runtime.stock.symbol} on interrupt...")
+                            self.executor.on_exit(runtime.trade, runtime.feed.last_price or 0.0, now_ist())
                 print(f"[DAY SUMMARY] Total Day P&L = \u20b9{self.day_pnl:+,.2f}")
                 break
             except Exception as e:
