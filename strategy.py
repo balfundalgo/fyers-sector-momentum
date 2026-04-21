@@ -1413,7 +1413,8 @@ class ExecutionRouter:
             reason = trade.exit_reason or "EXIT"
             print(f"[LIVE EXIT] Closing {len(trade.legs)} leg(s) for {trade.symbol} | reason={reason}")
             failed = []
-            for leg in trade.legs:
+            # Close future leg first, then option — reverse of entry order
+            for leg in reversed(trade.legs):
                 success = self.broker.close_live_position(leg, reason)
                 if not success:
                     failed.append(leg.symbol)
