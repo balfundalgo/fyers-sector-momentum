@@ -161,10 +161,18 @@ class StrategyGUI:
         left.pack(fill="y", side="left", padx=(10, 5), pady=10)
         left.pack_propagate(False)
 
+        # Scrollable container inside left panel
+        left_scroll = ctk.CTkScrollableFrame(
+            left, fg_color=self.CLR_PANEL, corner_radius=0,
+            scrollbar_button_color=self.CLR_BORDER,
+            scrollbar_button_hover_color=self.CLR_MUTED,
+        )
+        left_scroll.pack(fill="both", expand=True)
+
         right = ctk.CTkFrame(body, fg_color=self.CLR_PANEL, corner_radius=10)
         right.pack(fill="both", expand=True, side="left", padx=(5, 10), pady=10)
 
-        self._build_left_panel(left)
+        self._build_left_panel(left_scroll)
         self._build_right_panel(right)
 
     def _section(self, parent, title: str) -> ctk.CTkFrame:
@@ -203,19 +211,23 @@ class StrategyGUI:
 
         # Entry settings
         f2 = self._section(parent, "ENTRY SETTINGS")
-        self.rr_var       = ctk.StringVar(value="2.0")
-        self.buf_var      = ctk.StringVar(value="1.0")
-        self.maxmov_var   = ctk.StringVar(value="3.0")
-        self.range_var    = ctk.StringVar(value="1.0")
-        self.trail_var    = ctk.StringVar(value="0.5")
-        self.breakout_var = ctk.StringVar(value="Yes")
+        self.rr_var         = ctk.StringVar(value="2.0")
+        self.buf_pct_var    = ctk.StringVar(value="0.1")
+        self.sl_buf_pct_var = ctk.StringVar(value="0.1")
+        self.maxmov_var     = ctk.StringVar(value="3.0")
+        self.range_var      = ctk.StringVar(value="1.0")
+        self.trail_var      = ctk.StringVar(value="0.5")
+        self.breakout_var   = ctk.StringVar(value="Yes")
+        self.max_trades_var = ctk.StringVar(value="2")
 
-        self._row(f2, "Risk:Reward",      lambda p: ctk.CTkEntry(p, textvariable=self.rr_var,     width=90, font=ctk.CTkFont(size=12)))
-        self._row(f2, "Buffer Points",    lambda p: ctk.CTkEntry(p, textvariable=self.buf_var,    width=90, font=ctk.CTkFont(size=12)))
-        self._row(f2, "Max Stock Move%",  lambda p: ctk.CTkEntry(p, textvariable=self.maxmov_var, width=90, font=ctk.CTkFont(size=12)))
-        self._row(f2, "2nd Candle Range%",lambda p: ctk.CTkEntry(p, textvariable=self.range_var,  width=90, font=ctk.CTkFont(size=12)))
-        self._row(f2, "Trail Trigger%",   lambda p: ctk.CTkEntry(p, textvariable=self.trail_var,  width=90, font=ctk.CTkFont(size=12)))
-        self._row(f2, "Breakout Confirm", lambda p: ctk.CTkSegmentedButton(
+        self._row(f2, "Risk:Reward",        lambda p: ctk.CTkEntry(p, textvariable=self.rr_var,         width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "Breakout Buffer %",  lambda p: ctk.CTkEntry(p, textvariable=self.buf_pct_var,    width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "SL Buffer %",        lambda p: ctk.CTkEntry(p, textvariable=self.sl_buf_pct_var, width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "Max Stock Move%",    lambda p: ctk.CTkEntry(p, textvariable=self.maxmov_var,     width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "2nd Candle Range%",  lambda p: ctk.CTkEntry(p, textvariable=self.range_var,      width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "Trail Trigger%",     lambda p: ctk.CTkEntry(p, textvariable=self.trail_var,      width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "Max Trades/Day",     lambda p: ctk.CTkEntry(p, textvariable=self.max_trades_var, width=90, font=ctk.CTkFont(size=12)))
+        self._row(f2, "Breakout Confirm",   lambda p: ctk.CTkSegmentedButton(
             p, values=["Yes", "No"], variable=self.breakout_var,
             font=ctk.CTkFont(size=12), width=90,
         ))
@@ -396,9 +408,11 @@ class StrategyGUI:
         # Parse trade count
         if "DAY COUNT" in text.upper():
             try:
-                count = int(text.split(":")[1].strip().split("/")[0])
+                parts = text.split(":")[1].strip().split("/")
+                count = int(parts[0])
+                total = int(parts[1]) if len(parts) > 1 else int(self.max_trades_var.get())
                 self._trade_count = count
-                self.trade_count_label.configure(text=f"Trades today: {count} / 2")
+                self.trade_count_label.configure(text=f"Trades today: {count} / {total}")
             except Exception:
                 pass
 
@@ -512,17 +526,29 @@ class StrategyGUI:
                 self.root.after(0, self._refresh_trade_cards)
                 self.root.after(0, self._refresh_stock_rows)
 
-        # ── Parse TRAIL → update SL on card to breakeven ───────────────────
-        # [TRAIL] Armed. SL moved to breakeven 8958.50
+        # ── Parse TRAIL → update SL on card to new stepped value ────────────
+        # [TRAIL] NSE:AXISBANK-EQ Step 1: SL → 1348.20 (breakeven)
+        # [TRAIL] NSE:AXISBANK-EQ Step 2: SL → 1354.94 (+0.5% from entry)
         if "[TRAIL]" in text.upper():
-            m = re.search(r"SL moved to breakeven ([\d.]+)", text, re.IGNORECASE)
+            m = re.search(r"\[TRAIL\]\s+(\S+)\s+Step\s+(\d+):\s+SL\s+[→>]\s+([\d.]+)", text, re.IGNORECASE)
             if m:
-                new_sl = m.group(1)
-                # Find which stock this applies to (only 1 trade active at a time usually)
+                raw_sym  = m.group(1)
+                step_num = int(m.group(2))
+                new_sl   = m.group(3)
+                # Strip NSE: prefix and -EQ suffix to get base ticker
+                base = re.sub(r"^NSE:", "", raw_sym, flags=re.IGNORECASE)
+                base = re.sub(r"-EQ$", "", base, flags=re.IGNORECASE).upper()
+                # Update only the matching active trade
                 for sym in list(self._active_trades.keys()):
-                    self._active_trades[sym]["sl"] = new_sl
-                    self._active_trades[sym]["sl_label"] = "SL (BE):"
+                    if sym.upper() == base or sym.upper() in raw_sym.upper():
+                        self._active_trades[sym]["sl"]       = new_sl
+                        self._active_trades[sym]["sl_label"] = f"SL (Trail S{step_num}):"
+                        if sym in self._monitored_stocks:
+                            self._monitored_stocks[sym]["sl"]    = new_sl
+                            self._monitored_stocks[sym]["sl_be"] = True
+                        break
                 self.root.after(0, self._refresh_trade_cards)
+                self.root.after(0, self._refresh_stock_rows)
 
         # ── Stock Monitor parsing ────────────────────────────────────────────
 
@@ -966,13 +992,15 @@ class StrategyGUI:
         return StrategyConfig(
             paper_trading               = (self.paper_var.get() == "Paper"),
             risk_reward_ratio           = float(self.rr_var.get()),
-            breakout_buffer_points      = float(self.buf_var.get()),
+            breakout_buffer_pct         = float(self.buf_pct_var.get()),
+            sl_buffer_pct               = float(self.sl_buf_pct_var.get()),
             max_stock_move_pct          = float(self.maxmov_var.get()),
             second_candle_max_range_pct = float(self.range_var.get()),
             trailing_trigger_pct        = float(self.trail_var.get()),
             use_breakout_confirmation   = (self.breakout_var.get() == "Yes"),
             qty_option_lots             = int(self.opt_lots_var.get()),
             qty_future_lots             = int(self.fut_lots_var.get()),
+            max_trades_per_day          = int(self.max_trades_var.get()),
         )
 
     def _start(self) -> None:
@@ -1000,7 +1028,7 @@ class StrategyGUI:
         self.no_stocks_label.pack(pady=8)
         self.pnl_label.configure(text="Rs. 0.00", text_color=self.CLR_TEXT)
         self.pnl_type_label.configure(text="")
-        self.trade_count_label.configure(text="Trades today: 0 / 2")
+        self.trade_count_label.configure(text=f"Trades today: 0 / {self.max_trades_var.get()}")
         self._clear_log()
         self._append_log("[GUI] Starting strategy...")
 

@@ -1444,11 +1444,6 @@ class SetupTracker:
                                or  max(c1.high, c2.high) + buffer   (bullish)
                  locked_sl       = c2.high  (bearish) / c2.low  (bullish)
 
-             If 2nd candle FAILS range check (range > max_range_pct):
-               → Cooling-off state activated. All further candles beyond PDH/PDL
-                 are IGNORED until a candle closes back inside PDH/PDL.
-                 Only after that reset can a new Phase 1 begin.
-
     Phase 3  Live price monitoring via check_live_price().
              The moment last_price <= breakout_level (bearish)
                                or >= breakout_level (bullish)
