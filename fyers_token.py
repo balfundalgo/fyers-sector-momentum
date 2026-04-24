@@ -13,7 +13,7 @@ from fyers_apiv3 import fyersModel
 # ── Credentials ───────────────────────────────────────────
 APP_ID = "LPXLEAXXE1"
 APP_TYPE = "200"
-SECRET_KEY = "wNUzhKBPHFDmMKbz"
+SECRET_KEY = "wUA8AMLSrv"
 CLIENT_ID = f"{APP_ID}-{APP_TYPE}"
 FY_ID = "DP02418"
 TOTP_KEY = "FN66WGMJWRQR2HJNHJUHHXB4ONCY2Q2M"
