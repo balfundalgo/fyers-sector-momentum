@@ -11,6 +11,8 @@ into the log panel, and displays live P&L (updates every WS tick).
 from __future__ import annotations
 
 import io
+import json
+import os
 import queue
 import re
 import sys
@@ -105,6 +107,25 @@ class StrategyGUI:
     CLR_TEXT   = "#eaeaea"
     CLR_MUTED  = "#8892a4"
     CLR_BORDER = "#2a2a4a"
+    CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_credentials.json")
+
+    @staticmethod
+    def _load_credentials() -> dict:
+        """Load saved credentials from JSON file, return defaults if not found."""
+        creds_path = StrategyGUI.CREDS_FILE
+        if os.path.exists(creds_path):
+            try:
+                with open(creds_path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"app_id": "", "secret_key": ""}
+
+    @staticmethod
+    def _save_credentials(app_id: str, secret_key: str) -> None:
+        """Save credentials to JSON file."""
+        with open(StrategyGUI.CREDS_FILE, "w") as f:
+            json.dump({"app_id": app_id, "secret_key": secret_key}, f)
 
     def __init__(self) -> None:
         ctk.set_appearance_mode("dark")
@@ -200,6 +221,23 @@ class StrategyGUI:
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=self.CLR_TEXT,
         ).pack(anchor="w", padx=16, pady=(14, 0))
+
+        # Fyers Credentials
+        fc = self._section(parent, "FYERS CREDENTIALS")
+        saved = self._load_credentials()
+        self.app_id_var = ctk.StringVar(value=saved.get("app_id", ""))
+        self.secret_key_var = ctk.StringVar(value=saved.get("secret_key", ""))
+        self._row(fc, "App ID", lambda p: ctk.CTkEntry(p, textvariable=self.app_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. XXXXXX-200"))
+        self._row(fc, "Secret Key", lambda p: ctk.CTkEntry(p, textvariable=self.secret_key_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="your secret key"))
+        save_row = ctk.CTkFrame(fc, fg_color="transparent")
+        save_row.pack(fill="x", padx=10, pady=(2, 6))
+        self.creds_status = ctk.CTkLabel(save_row, text="", font=ctk.CTkFont(size=10), text_color=self.CLR_GREEN)
+        self.creds_status.pack(side="left", padx=(0, 5))
+        ctk.CTkButton(
+            save_row, text="Save", width=60, height=26,
+            font=ctk.CTkFont(size=11), corner_radius=6,
+            command=self._save_creds_clicked,
+        ).pack(side="right")
 
         # Mode
         f = self._section(parent, "TRADING MODE")
@@ -1003,9 +1041,48 @@ class StrategyGUI:
             max_trades_per_day          = int(self.max_trades_var.get()),
         )
 
+    def _save_creds_clicked(self) -> None:
+        app_id = self.app_id_var.get().strip()
+        secret = self.secret_key_var.get().strip()
+        if not app_id or not secret:
+            self.creds_status.configure(text="Both fields required", text_color=self.CLR_RED)
+            return
+        self._save_credentials(app_id, secret)
+        self.creds_status.configure(text="Saved ✓", text_color=self.CLR_GREEN)
+
+    def _apply_credentials(self) -> None:
+        """Override fyers_connect and fyers_token credentials at runtime from saved file."""
+        saved = self._load_credentials()
+        app_id_full = saved.get("app_id", "").strip()
+        secret = saved.get("secret_key", "").strip()
+        if not app_id_full or not secret:
+            return
+        # Parse APP_ID and APP_TYPE from "XXXX-200" format
+        if "-" in app_id_full:
+            app_id, app_type = app_id_full.rsplit("-", 1)
+        else:
+            app_id, app_type = app_id_full, "200"
+        client_id = f"{app_id}-{app_type}"
+        # Patch fyers_connect module
+        import fyers_connect
+        fyers_connect.APP_ID = app_id
+        fyers_connect.APP_TYPE = app_type
+        fyers_connect.SECRET_KEY = secret
+        fyers_connect.CLIENT_ID = client_id
+        # Patch fyers_token module
+        import fyers_token
+        fyers_token.APP_ID = app_id
+        fyers_token.APP_TYPE = app_type
+        fyers_token.SECRET_KEY = secret
+        fyers_token.CLIENT_ID = client_id
+        # Patch strategy module CLIENT_ID import
+        import strategy
+        strategy.CLIENT_ID = client_id
+
     def _start(self) -> None:
         if self.runner and self.runner.is_alive():
             return
+        self._apply_credentials()
         try:
             cfg = self._build_config()
         except ValueError as e:
