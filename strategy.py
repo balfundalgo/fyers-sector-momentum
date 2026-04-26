@@ -418,9 +418,17 @@ class InstrumentMaster:
 
     def _download_master(self, target: Path) -> None:
         try:
+            import ssl
             print(f"[MASTER] Downloading FYERS FO symbol master -> {target}")
             req = urllib.request.Request(self.FYERS_FO_URL, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            ssl_ctx = ssl.create_default_context()
+            try:
+                import certifi
+                ssl_ctx.load_verify_locations(certifi.where())
+            except ImportError:
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
                 data = resp.read()
             if not data:
                 raise RuntimeError("empty response")
