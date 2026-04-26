@@ -16,10 +16,10 @@ from fyers_apiv3 import fyersModel
 # ============================================================
 # CREDENTIALS
 # ============================================================
-APP_ID = "U6TR5AWJ1I"
-APP_TYPE = "100"
-SECRET_KEY = "1E829EFVS5"
-CLIENT_ID = f"{APP_ID}-{APP_TYPE}"  # U6TR5AWJ1I-100
+APP_ID = "LPXLEAXXE1"
+APP_TYPE = "200"
+SECRET_KEY = "wUA8AMLSrv"
+CLIENT_ID = f"{APP_ID}-{APP_TYPE}"  # LPXLEAXXE1-200
 
 FY_ID = "DP02418"
 TOTP_KEY = "FN66WGMJWRQR2HJNHJUHHXB4ONCY2Q2M"

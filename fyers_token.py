@@ -57,7 +57,10 @@ def generate_token():
         "appType": APP_TYPE, "code_challenge": "", "state": "sample_state",
         "scope": "", "nonce": "", "response_type": "code", "create_cookie": True
     }, headers={**HEADERS, "Authorization": f"Bearer {trade_token}"})
-    auth_code = parse_qs(urlparse(r4.json()["Url"]).query)["auth_code"][0]
+    r4_json = r4.json()
+    if "Url" not in r4_json:
+        raise RuntimeError(f"Auth code step failed — response: {r4_json}")
+    auth_code = parse_qs(urlparse(r4_json["Url"]).query)["auth_code"][0]
     print("✓ Auth code received")
 
     # Step 5: Generate access token
