@@ -43,8 +43,9 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── Global SSL fix for PyInstaller bundles on Windows ─────────────────────────
 # The bundled Python has no access to system CA certificates, causing
 # CERTIFICATE_VERIFY_FAILED on all WSS/HTTPS connections (WebSocket, API, etc).
-# This patches the default SSL context globally so all libraries (including
-# fyers_apiv3 WebSocket internals) work without certificate errors.
+# Fix 1: Patch default HTTPS context for urllib/requests.
+# Fix 2: Monkey-patch websocket-client's run_forever to inject sslopt,
+#         because fyers_apiv3 calls run_forever() without passing sslopt.
 import ssl as _ssl
 try:
     import certifi as _certifi
@@ -54,6 +55,14 @@ except ImportError:
     _ssl_ctx.check_hostname = False
     _ssl_ctx.verify_mode = _ssl.CERT_NONE
 _ssl._create_default_https_context = lambda: _ssl_ctx
+
+import websocket as _ws_mod
+_orig_run_forever = _ws_mod.WebSocketApp.run_forever
+def _patched_run_forever(self, **kwargs):
+    if "sslopt" not in kwargs:
+        kwargs["sslopt"] = {"cert_reqs": _ssl.CERT_NONE}
+    return _orig_run_forever(self, **kwargs)
+_ws_mod.WebSocketApp.run_forever = _patched_run_forever
 
 
 # ============================================================================
