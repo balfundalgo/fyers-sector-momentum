@@ -40,6 +40,21 @@ from fyers_connect import CLIENT_ID
 
 IST = pytz.timezone("Asia/Kolkata")
 
+# ── Global SSL fix for PyInstaller bundles on Windows ─────────────────────────
+# The bundled Python has no access to system CA certificates, causing
+# CERTIFICATE_VERIFY_FAILED on all WSS/HTTPS connections (WebSocket, API, etc).
+# This patches the default SSL context globally so all libraries (including
+# fyers_apiv3 WebSocket internals) work without certificate errors.
+import ssl as _ssl
+try:
+    import certifi as _certifi
+    _ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _ssl_ctx = _ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = _ssl.CERT_NONE
+_ssl._create_default_https_context = lambda: _ssl_ctx
+
 
 # ============================================================================
 # CONFIG
