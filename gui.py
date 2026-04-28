@@ -119,13 +119,13 @@ class StrategyGUI:
                     return json.load(f)
             except Exception:
                 pass
-        return {"app_id": "", "secret_key": ""}
+        return {"fyers_id": "", "pin": "", "totp_key": "", "app_id": "", "secret_key": ""}
 
     @staticmethod
-    def _save_credentials(app_id: str, secret_key: str) -> None:
+    def _save_credentials(fyers_id: str, pin: str, totp_key: str, app_id: str, secret_key: str) -> None:
         """Save credentials to JSON file."""
         with open(StrategyGUI.CREDS_FILE, "w") as f:
-            json.dump({"app_id": app_id, "secret_key": secret_key}, f)
+            json.dump({"fyers_id": fyers_id, "pin": pin, "totp_key": totp_key, "app_id": app_id, "secret_key": secret_key}, f)
 
     def __init__(self) -> None:
         ctk.set_appearance_mode("dark")
@@ -225,10 +225,16 @@ class StrategyGUI:
         # Fyers Credentials
         fc = self._section(parent, "FYERS CREDENTIALS")
         saved = self._load_credentials()
+        self.fyers_id_var = ctk.StringVar(value=saved.get("fyers_id", ""))
+        self.pin_var = ctk.StringVar(value=saved.get("pin", ""))
+        self.totp_key_var = ctk.StringVar(value=saved.get("totp_key", ""))
         self.app_id_var = ctk.StringVar(value=saved.get("app_id", ""))
         self.secret_key_var = ctk.StringVar(value=saved.get("secret_key", ""))
+        self._row(fc, "Fyers ID", lambda p: ctk.CTkEntry(p, textvariable=self.fyers_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. YN04712"))
+        self._row(fc, "PIN", lambda p: ctk.CTkEntry(p, textvariable=self.pin_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="4-digit PIN"))
+        self._row(fc, "TOTP Secret", lambda p: ctk.CTkEntry(p, textvariable=self.totp_key_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="TOTP secret key"))
         self._row(fc, "App ID", lambda p: ctk.CTkEntry(p, textvariable=self.app_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. XXXXXX-200"))
-        self._row(fc, "Secret Key", lambda p: ctk.CTkEntry(p, textvariable=self.secret_key_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="your secret key"))
+        self._row(fc, "Secret Key", lambda p: ctk.CTkEntry(p, textvariable=self.secret_key_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="app secret key"))
         save_row = ctk.CTkFrame(fc, fg_color="transparent")
         save_row.pack(fill="x", padx=10, pady=(2, 6))
         self.creds_status = ctk.CTkLabel(save_row, text="", font=ctk.CTkFont(size=10), text_color=self.CLR_GREEN)
@@ -1042,17 +1048,23 @@ class StrategyGUI:
         )
 
     def _save_creds_clicked(self) -> None:
+        fyers_id = self.fyers_id_var.get().strip()
+        pin = self.pin_var.get().strip()
+        totp_key = self.totp_key_var.get().strip()
         app_id = self.app_id_var.get().strip()
         secret = self.secret_key_var.get().strip()
-        if not app_id or not secret:
-            self.creds_status.configure(text="Both fields required", text_color=self.CLR_RED)
+        if not fyers_id or not pin or not totp_key or not app_id or not secret:
+            self.creds_status.configure(text="All fields required", text_color=self.CLR_RED)
             return
-        self._save_credentials(app_id, secret)
+        self._save_credentials(fyers_id, pin, totp_key, app_id, secret)
         self.creds_status.configure(text="Saved ✓", text_color=self.CLR_GREEN)
 
     def _apply_credentials(self) -> None:
         """Override fyers_connect and fyers_token credentials at runtime from saved file."""
         saved = self._load_credentials()
+        fyers_id = saved.get("fyers_id", "").strip()
+        pin = saved.get("pin", "").strip()
+        totp_key = saved.get("totp_key", "").strip()
         app_id_full = saved.get("app_id", "").strip()
         secret = saved.get("secret_key", "").strip()
         if not app_id_full or not secret:
@@ -1069,12 +1081,24 @@ class StrategyGUI:
         fyers_connect.APP_TYPE = app_type
         fyers_connect.SECRET_KEY = secret
         fyers_connect.CLIENT_ID = client_id
+        if fyers_id:
+            fyers_connect.FY_ID = fyers_id
+        if pin:
+            fyers_connect.PIN = pin
+        if totp_key:
+            fyers_connect.TOTP_KEY = totp_key
         # Patch fyers_token module
         import fyers_token
         fyers_token.APP_ID = app_id
         fyers_token.APP_TYPE = app_type
         fyers_token.SECRET_KEY = secret
         fyers_token.CLIENT_ID = client_id
+        if fyers_id:
+            fyers_token.FY_ID = fyers_id
+        if pin:
+            fyers_token.PIN = pin
+        if totp_key:
+            fyers_token.TOTP_KEY = totp_key
         # Patch strategy module CLIENT_ID import
         import strategy
         strategy.CLIENT_ID = client_id

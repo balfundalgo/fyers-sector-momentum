@@ -16,14 +16,14 @@ from fyers_apiv3 import fyersModel
 # ============================================================
 # CREDENTIALS
 # ============================================================
-APP_ID = "LPXLEAXXE1"
+APP_ID = "KWSRQDLSF2"
 APP_TYPE = "200"
-SECRET_KEY = "wUA8AMLSrv"
-CLIENT_ID = f"{APP_ID}-{APP_TYPE}"  # LPXLEAXXE1-200
+SECRET_KEY = "WRKnlBpWq5TrosWM"
+CLIENT_ID = f"{APP_ID}-{APP_TYPE}"  # KWSRQDLSF2-200
 
-FY_ID = "DP02418"
-TOTP_KEY = "FN66WGMJWRQR2HJNHJUHHXB4ONCY2Q2M"
-PIN = "0510"
+FY_ID = "YN04712"
+TOTP_KEY = "67LK3GUYYZLAH5266PQFX5XJJWE3ZROX"
+PIN = "2825"
 
 REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
 APP_ID_TYPE = "2"  # 2 = web login

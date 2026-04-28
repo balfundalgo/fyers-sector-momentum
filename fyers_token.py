@@ -11,13 +11,13 @@ from urllib.parse import parse_qs, urlparse
 from fyers_apiv3 import fyersModel
 
 # ── Credentials ───────────────────────────────────────────
-APP_ID = "LPXLEAXXE1"
+APP_ID = "KWSRQDLSF2"
 APP_TYPE = "200"
-SECRET_KEY = "wUA8AMLSrv"
+SECRET_KEY = "WRKnlBpWq5TrosWM"
 CLIENT_ID = f"{APP_ID}-{APP_TYPE}"
-FY_ID = "DP02418"
-TOTP_KEY = "FN66WGMJWRQR2HJNHJUHHXB4ONCY2Q2M"
-PIN = "0510"
+FY_ID = "YN04712"
+TOTP_KEY = "67LK3GUYYZLAH5266PQFX5XJJWE3ZROX"
+PIN = "2825"
 REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
 
 # ── Endpoints ─────────────────────────────────────────────
