@@ -98,15 +98,16 @@ class StrategyRunner(threading.Thread):
 # MAIN GUI
 # ============================================================================
 class StrategyGUI:
-    # ── Colour palette ────────────────────────────────────────────────────────
-    CLR_BG     = "#1a1a2e"
-    CLR_PANEL  = "#16213e"
-    CLR_CARD   = "#0f3460"
-    CLR_GREEN  = "#00d26a"
-    CLR_RED    = "#ff4757"
-    CLR_TEXT   = "#eaeaea"
-    CLR_MUTED  = "#8892a4"
-    CLR_BORDER = "#2a2a4a"
+    # ── Colour palette (light white & blue) ──────────────────────────────────
+    CLR_BG     = "#f0f4f8"
+    CLR_PANEL  = "#ffffff"
+    CLR_CARD   = "#e8f0fe"
+    CLR_GREEN  = "#0d9f4f"
+    CLR_RED    = "#d93025"
+    CLR_TEXT   = "#1a1a2e"
+    CLR_MUTED  = "#5f6a7a"
+    CLR_BORDER = "#c4d0e0"
+    CLR_ACCENT = "#1a73e8"
     CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_credentials.json")
 
     @staticmethod
@@ -128,8 +129,8 @@ class StrategyGUI:
             json.dump({"fyers_id": fyers_id, "pin": pin, "totp_key": totp_key, "app_id": app_id, "secret_key": secret_key}, f)
 
     def __init__(self) -> None:
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
 
         self.root = ctk.CTk()
         self.root.title("Fyers Sector Momentum Strategy  |  Balfund Trading Pvt. Ltd.")
@@ -276,12 +277,10 @@ class StrategyGUI:
             font=ctk.CTkFont(size=12), width=90,
         ))
 
-        # Lots
-        f3 = self._section(parent, "LOTS")
-        self.opt_lots_var = ctk.StringVar(value="1")
-        self.fut_lots_var = ctk.StringVar(value="1")
-        self._row(f3, "Option Lots", lambda p: ctk.CTkEntry(p, textvariable=self.opt_lots_var, width=90, font=ctk.CTkFont(size=12)))
-        self._row(f3, "Future Lots", lambda p: ctk.CTkEntry(p, textvariable=self.fut_lots_var, width=90, font=ctk.CTkFont(size=12)))
+        # Risk Management
+        f3 = self._section(parent, "RISK MANAGEMENT")
+        self.risk_pct_var = ctk.StringVar(value="1.0")
+        self._row(f3, "Risk % per Stock", lambda p: ctk.CTkEntry(p, textvariable=self.risk_pct_var, width=90, font=ctk.CTkFont(size=12)))
 
         # Active Trades
         ctk.CTkLabel(
@@ -341,8 +340,8 @@ class StrategyGUI:
         self.start_btn = ctk.CTkButton(
             btn_frame, text="START",
             font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=self.CLR_GREEN, hover_color="#00b359",
-            text_color="#000000", height=42, corner_radius=8,
+            fg_color=self.CLR_ACCENT, hover_color="#1557b0",
+            text_color="#ffffff", height=42, corner_radius=8,
             command=self._start,
         )
         self.start_btn.pack(fill="x", pady=(0, 6))
@@ -350,7 +349,7 @@ class StrategyGUI:
         self.stop_btn = ctk.CTkButton(
             btn_frame, text="STOP",
             font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=self.CLR_RED, hover_color="#cc0000",
+            fg_color=self.CLR_RED, hover_color="#b71c1c",
             text_color="#ffffff", height=42, corner_radius=8,
             state="disabled", command=self._stop,
         )
@@ -367,7 +366,7 @@ class StrategyGUI:
         ).pack(side="left")
 
         # Column header row
-        col_hdr = ctk.CTkFrame(parent, fg_color="#0d1a2e", corner_radius=6)
+        col_hdr = ctk.CTkFrame(parent, fg_color="#d6e4f0", corner_radius=6)
         col_hdr.pack(fill="x", padx=10, pady=(0, 1))
         # Column widths must match _STOCK_COLS in _refresh_stock_rows
         for _key, title, width, anchor in self._STOCK_COLS:
@@ -402,19 +401,20 @@ class StrategyGUI:
         self.log_box = ctk.CTkTextbox(
             parent,
             font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color="#0d0d1a", text_color=self.CLR_TEXT,
+            fg_color="#f8fafc", text_color=self.CLR_TEXT,
             wrap="word", corner_radius=8, state="disabled",
+            border_width=1, border_color=self.CLR_BORDER,
         )
         self.log_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self.log_box._textbox.tag_config("entry",    foreground="#00d26a")
-        self.log_box._textbox.tag_config("exit",     foreground="#ff6b81")
-        self.log_box._textbox.tag_config("pnl",      foreground="#ffd700")
-        self.log_box._textbox.tag_config("livepnl",  foreground="#a0c4ff")
-        self.log_box._textbox.tag_config("warn",     foreground="#ffa502")
-        self.log_box._textbox.tag_config("error",    foreground="#ff4757")
-        self.log_box._textbox.tag_config("setup",    foreground="#70a1ff")
-        self.log_box._textbox.tag_config("breakout", foreground="#00d26a")
+        self.log_box._textbox.tag_config("entry",    foreground="#0d9f4f")
+        self.log_box._textbox.tag_config("exit",     foreground="#d93025")
+        self.log_box._textbox.tag_config("pnl",      foreground="#b8860b")
+        self.log_box._textbox.tag_config("livepnl",  foreground="#1a73e8")
+        self.log_box._textbox.tag_config("warn",     foreground="#e8710a")
+        self.log_box._textbox.tag_config("error",    foreground="#d93025")
+        self.log_box._textbox.tag_config("setup",    foreground="#1a73e8")
+        self.log_box._textbox.tag_config("breakout", foreground="#0d9f4f")
         self.log_box._textbox.tag_config("info",     foreground=self.CLR_TEXT)
 
     # ── Log handling ──────────────────────────────────────────────────────────
@@ -677,15 +677,23 @@ class StrategyGUI:
                         self._monitored_stocks[sym]["sl_be"]  = True
                 self.root.after(0, self._refresh_stock_rows)
 
-        # [EXIT] SL/TP/TIME — update status on stock monitor
+        # [EXIT] SL/TP/TIME SYMBOL @ price — update status on stock monitor
+        # New format: [EXIT] SL HINDZINC @ 612.11 (09:52:45)
         if "[EXIT]" in text.upper() and "[PAPER" not in text.upper():
-            m = re.search(r"\[EXIT\]\s+(SL|TP|TIME)\s+@", text, re.IGNORECASE)
+            m = re.search(r"\[EXIT\]\s+(SL|TP|TIME)\s+(\S+)\s+@", text, re.IGNORECASE)
             if m:
                 reason = m.group(1).upper()
+                exit_sym = m.group(2).upper()
                 exit_status = {"SL": "SL HIT", "TP": "TP HIT", "TIME": "TIME EXIT"}.get(reason, "DONE")
-                for sym in self._monitored_stocks:
-                    if self._monitored_stocks[sym].get("status") == "ENTERED":
-                        self._monitored_stocks[sym]["status"] = exit_status
+                # Only mark the specific stock that exited
+                if exit_sym in self._monitored_stocks:
+                    self._monitored_stocks[exit_sym]["status"] = exit_status
+                else:
+                    # Fallback: try to match partial symbol
+                    for sym in self._monitored_stocks:
+                        if sym.upper() == exit_sym or exit_sym in sym.upper():
+                            self._monitored_stocks[sym]["status"] = exit_status
+                            break
                 self.root.after(0, self._refresh_stock_rows)
 
         # [DONE] Trade cycle completed for M&M.
@@ -740,13 +748,13 @@ class StrategyGUI:
     # ── Monitored Stocks Table ───────────────────────────────────────────────
     # Status colour map
     _STATUS_COLORS = {
-        "Waiting":   "#8892a4",   # muted grey
-        "Phase 1 ✓": "#ffa502",   # orange — first candle confirmed
-        "Setup ✓":   "#70a1ff",   # blue — setup locked, monitoring live
-        "ENTERED":   "#00d26a",   # green — trade open
-        "Done":      "#8892a4",   # muted
-        "Done ✅":    "#00d26a",   # green profit
-        "Done ❌":    "#ff4757",   # red loss
+        "Waiting":   "#5f6a7a",   # muted grey
+        "Phase 1 ✓": "#e8710a",   # orange — first candle confirmed
+        "Setup ✓":   "#1a73e8",   # blue — setup locked, monitoring live
+        "ENTERED":   "#0d9f4f",   # green — trade open
+        "Done":      "#5f6a7a",   # muted
+        "Done ✅":    "#0d9f4f",   # green profit
+        "Done ❌":    "#d93025",   # red loss
     }
 
     def _refresh_stock_rows(self) -> None:
@@ -801,7 +809,7 @@ class StrategyGUI:
                 self._stock_row_widgets[sym] = widgets
 
                 # Separator
-                sep = ctk.CTkFrame(self.stocks_frame, fg_color="#1e2a3a", height=1, corner_radius=0)
+                sep = ctk.CTkFrame(self.stocks_frame, fg_color="#d6e4f0", height=1, corner_radius=0)
                 sep.pack(fill="x", padx=4)
 
             else:
@@ -844,7 +852,7 @@ class StrategyGUI:
         # Create or update cards
         for sym, info in self._active_trades.items():
             if sym not in self._trade_cards:
-                card = ctk.CTkFrame(self.trades_frame, fg_color="#0a2a4a", corner_radius=6)
+                card = ctk.CTkFrame(self.trades_frame, fg_color="#e8f0fe", corner_radius=6)
                 card.pack(fill="x", padx=6, pady=4)
                 self._trade_cards[sym] = card
 
@@ -971,19 +979,19 @@ class StrategyGUI:
             )
 
             # PDH / PDL
-            w["pdh"].configure(text=info.get("pdh", "—"), text_color="#aaaacc")
-            w["pdl"].configure(text=info.get("pdl", "—"), text_color="#aaaacc")
+            w["pdh"].configure(text=info.get("pdh", "—"), text_color="#4a5568")
+            w["pdl"].configure(text=info.get("pdl", "—"), text_color="#4a5568")
 
             # Breakout level — highlight once confirmed
             bl = info.get("breakout", "")
             w["breakout"].configure(
                 text=bl if bl else "—",
-                text_color="#ffd700" if bl else self.CLR_MUTED,
+                text_color="#b8860b" if bl else self.CLR_MUTED,
             )
 
             # SL — red, or orange after trail
             sl = info.get("sl", "")
-            sl_color = "#ffa502" if info.get("sl_be") else self.CLR_RED
+            sl_color = "#e8710a" if info.get("sl_be") else self.CLR_RED
             w["sl"].configure(text=sl if sl else "—", text_color=sl_color if sl else self.CLR_MUTED)
 
             # TP — green once entered
@@ -997,14 +1005,14 @@ class StrategyGUI:
 
             # Status badge
             STATUS_COLORS = {
-                "WATCHING":  ("#8892a4", "#1a1a2e"),
-                "PHASE1":    ("#70a1ff", "#0f2040"),
-                "SETUP":     ("#ffd700", "#1a1500"),
-                "ENTERED":   ("#00d26a", "#001a0e"),
-                "SL HIT":    ("#ff4757", "#1a0000"),
-                "TP HIT":    ("#00d26a", "#001a0e"),
-                "TIME EXIT": ("#ffa502", "#1a0e00"),
-                "DONE":      ("#555566", "#111122"),
+                "WATCHING":  ("#5f6a7a", "#f0f4f8"),
+                "PHASE1":    ("#1a73e8", "#e8f0fe"),
+                "SETUP":     ("#b8860b", "#fef9e7"),
+                "ENTERED":   ("#0d9f4f", "#e6f7ee"),
+                "SL HIT":    ("#d93025", "#fde7e5"),
+                "TP HIT":    ("#0d9f4f", "#e6f7ee"),
+                "TIME EXIT": ("#e8710a", "#fef3e5"),
+                "DONE":      ("#5f6a7a", "#f0f4f8"),
             }
             fg, bg_hint = STATUS_COLORS.get(st, ("#8892a4", "#1a1a2e"))
             w["status"].configure(text=st, text_color=fg)
@@ -1042,8 +1050,7 @@ class StrategyGUI:
             second_candle_max_range_pct = float(self.range_var.get()),
             trailing_trigger_pct        = float(self.trail_var.get()),
             use_breakout_confirmation   = (self.breakout_var.get() == "Yes"),
-            qty_option_lots             = int(self.opt_lots_var.get()),
-            qty_future_lots             = int(self.fut_lots_var.get()),
+            risk_pct_per_stock          = float(self.risk_pct_var.get()),
             max_trades_per_day          = int(self.max_trades_var.get()),
         )
 

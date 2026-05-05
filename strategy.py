@@ -82,8 +82,7 @@ class StrategyConfig:
     trend_window_end: Tuple[int, int] = (9, 25)
     poll_seconds_when_idle: float = 1.0
     max_history_rows: int = 500
-    qty_option_lots: int = 1
-    qty_future_lots: int = 1
+    risk_pct_per_stock: float = 1.0       # % of capital to risk per stock (e.g. 1.0 = 1%)
     symbol_master_csv_path: Optional[str] = None
     symbol_master_refresh_days: int = 1
     constituents_cache_days: int = 15
@@ -341,6 +340,28 @@ class FyersBroker:
                     "raw":        item,
                 }
         return out
+
+    def fetch_funds(self) -> float:
+        """Fetch available capital from Fyers funds API. Returns available balance."""
+        try:
+            resp = self.fyers.funds()
+            fund_limit = resp.get("fund_limit", [])
+            for item in fund_limit:
+                title = (item.get("title") or "").lower()
+                if title in ("available balance", "total balance"):
+                    val = float(item.get("equityAmount", 0) or 0)
+                    if val > 0:
+                        return val
+            # Fallback: try first entry with positive equityAmount
+            for item in fund_limit:
+                val = float(item.get("equityAmount", 0) or 0)
+                if val > 0:
+                    return val
+            print(f"[FUNDS WARN] Could not parse funds response: {resp}")
+            return 0.0
+        except Exception as e:
+            print(f"[FUNDS ERROR] Failed to fetch funds: {e}")
+            return 0.0
 
     def place_market_order(self, symbol: str, side: int, qty: int, product_type: str = "INTRADAY") -> Dict[str, Any]:
         payload = {
@@ -1390,22 +1411,37 @@ class ExecutionRouter:
         self.master        = master
         self.order_tracker = order_tracker
         self.paper_ledger  = PaperLedger(broker)
+        self.day_capital: float = 0.0   # fetched once at startup
 
-    def resolve_execution_legs(self, stock: SelectedStock, direction: str, entry_price: float) -> List[ResolvedLeg]:
-        try:
-            return self.master.resolve(stock.symbol, entry_price, direction, self.cfg.qty_option_lots, self.cfg.qty_future_lots, broker=self.broker)
-        except Exception as e:
-            print(f"[RESOLVER WARN] {e}")
-            print("[RESOLVER WARN] Falling back to stock-equity proxy leg (no FO contracts — possibly expiry day or symbol mismatch).")
-            proxy_qty = max(1, self.cfg.qty_option_lots)
-            return [ResolvedLeg(name="stock_equity", symbol=stock.fyers_symbol, side=(1 if direction == "BULLISH" else -1), qty=proxy_qty)]
+    def fetch_and_store_capital(self) -> float:
+        """Fetch funds from broker API once at morning, store for the day."""
+        self.day_capital = self.broker.fetch_funds()
+        print(f"[FUNDS] Available capital: ₹{self.day_capital:,.2f}")
+        return self.day_capital
+
+    def calc_equity_qty(self, entry_price: float, stop_loss: float) -> int:
+        """Qty = floor(Capital × Risk%) / abs(Entry - SL)"""
+        sl_dist = abs(entry_price - stop_loss)
+        if sl_dist <= 0 or self.day_capital <= 0:
+            print(f"[QTY WARN] Invalid: capital={self.day_capital:.2f}, sl_dist={sl_dist:.2f}")
+            return 0
+        risk_amount = self.day_capital * (self.cfg.risk_pct_per_stock / 100.0)
+        qty = int(risk_amount / sl_dist)  # floor
+        print(f"[QTY] capital={self.day_capital:,.0f} × risk={self.cfg.risk_pct_per_stock}% = ₹{risk_amount:,.0f} / sl_dist={sl_dist:.2f} = {qty} shares")
+        return max(qty, 0)
 
     def enter(self, stock: SelectedStock, direction: str, entry_price: float, stop_loss: float) -> TradeState:
         sl_dist = abs(entry_price - stop_loss)
         if sl_dist <= 0:
             raise RuntimeError("Invalid SL distance")
-        tp   = (entry_price + (sl_dist * self.cfg.risk_reward_ratio)) if direction == "BULLISH" else (entry_price - (sl_dist * self.cfg.risk_reward_ratio))
-        legs = self.resolve_execution_legs(stock, direction, entry_price)
+        tp = (entry_price + (sl_dist * self.cfg.risk_reward_ratio)) if direction == "BULLISH" else (entry_price - (sl_dist * self.cfg.risk_reward_ratio))
+
+        qty = self.calc_equity_qty(entry_price, stop_loss)
+        if qty <= 0:
+            raise RuntimeError(f"Calculated qty is 0 — capital={self.day_capital:.0f}, sl_dist={sl_dist:.2f}")
+
+        side = 1 if direction == "BULLISH" else -1  # BUY for bullish, SELL (short) for bearish
+        legs = [ResolvedLeg(name="equity", symbol=stock.fyers_symbol, side=side, qty=qty)]
 
         print(f"[ENTRY] {direction} {stock.symbol} @ {entry_price:.2f} | SL={stop_loss:.2f} TP={tp:.2f}")
         print("[LEGS]", [f"{'BUY' if l.side == 1 else 'SELL'} {l.symbol} x{l.qty}" for l in legs])
@@ -1438,19 +1474,13 @@ class ExecutionRouter:
         if self.cfg.paper_trading:
             self.paper_ledger.close_orders(trade.paper_orders, exit_price, ts)
         else:
-            # ── Live mode: place reverse market orders for every entry leg ──
-            # Each leg is closed with the opposite side to the original entry.
-            # We attempt all legs even if one fails — partial close is better
-            # than leaving all positions open.
             reason = trade.exit_reason or "EXIT"
             print(f"[LIVE EXIT] Closing {len(trade.legs)} leg(s) for {trade.symbol} | reason={reason}")
             failed = []
-            # Close future leg first, then option — reverse of entry order
-            for leg in reversed(trade.legs):
+            for leg in trade.legs:
                 success = self.broker.close_live_position(leg, reason)
                 if not success:
                     failed.append(leg.symbol)
-                time.sleep(0.2)   # small pause between legs to avoid rate limit
             if failed:
                 print(f"[LIVE EXIT WARN] Failed to close: {failed} — check positions manually in Fyers!")
             else:
@@ -1688,7 +1718,9 @@ class PositionManager:
         trade.exit_price  = px
         trade.exit_time   = current_dt
         trade.exit_reason = reason
-        print(f"[EXIT] {reason} @ {px:.2f} ({current_dt.strftime('%H:%M:%S')})")
+        # Include symbol so GUI can identify which trade exited
+        sym_base = trade.symbol.split(":")[-1].replace("-EQ", "")
+        print(f"[EXIT] {reason} {sym_base} @ {px:.2f} ({current_dt.strftime('%H:%M:%S')})")
         return reason
 
 
@@ -1740,6 +1772,12 @@ class SectorMomentumFyersStrategy:
             return True
 
     def bootstrap_selection(self) -> None:
+        # Fetch available capital once for the day
+        if self.executor.day_capital <= 0:
+            self.executor.fetch_and_store_capital()
+            if self.executor.day_capital <= 0:
+                raise RuntimeError("Could not fetch available capital from broker — cannot calculate position sizes")
+
         today      = now_ist()
         self.trend = self.phases.identify_day_trend(today)
         ranked     = self.phases.rank_sectors(self.trend)
