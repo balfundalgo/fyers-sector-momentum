@@ -16,8 +16,8 @@ APP_TYPE = "200"
 SECRET_KEY = "WRKnlBpWq5TrosWM"
 CLIENT_ID = f"{APP_ID}-{APP_TYPE}"
 FY_ID = "YN04712"
-TOTP_KEY = "67LK3GUYYZLAH5266PQFX5XJJWE3ZROX"
-PIN = "2825"
+TOTP_KEY = "PBZZUVFDCHOEXGFFVOA2VZMYOTAQEDT5"
+PIN = "9717"
 REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
 
 # ── Endpoints ─────────────────────────────────────────────
@@ -38,6 +38,7 @@ def generate_token():
 
     # Step 2: Verify TOTP
     totp = pyotp.TOTP(TOTP_KEY).now()
+    print(f"[DEBUG] TOTP_KEY used: {TOTP_KEY[:6]}...{TOTP_KEY[-4:]} | generated code: {totp}")
     r2 = requests.post(f"{BASE}/verify_otp", json={"request_key": request_key, "otp": totp}, headers=HEADERS)
     assert r2.status_code == 200, f"Verify TOTP failed: {r2.text}"
     request_key_2 = r2.json()["request_key"]
