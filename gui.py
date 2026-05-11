@@ -282,6 +282,15 @@ class StrategyGUI:
         self.risk_pct_var = ctk.StringVar(value="1.0")
         self._row(f3, "Risk % per Stock", lambda p: ctk.CTkEntry(p, textvariable=self.risk_pct_var, width=90, font=ctk.CTkFont(size=12)))
 
+        # Filters
+        f5 = self._section(parent, "FILTERS")
+        self.cutoff_var    = ctk.StringVar(value="14:55")
+        self.min_price_var = ctk.StringVar(value="0")
+        self.max_price_var = ctk.StringVar(value="0")
+        self._row(f5, "Entry Cutoff (HH:MM)", lambda p: ctk.CTkEntry(p, textvariable=self.cutoff_var,    width=90, font=ctk.CTkFont(size=12), placeholder_text="14:55"))
+        self._row(f5, "Min Stock Price ₹",    lambda p: ctk.CTkEntry(p, textvariable=self.min_price_var, width=90, font=ctk.CTkFont(size=12), placeholder_text="0=off"))
+        self._row(f5, "Max Stock Price ₹",    lambda p: ctk.CTkEntry(p, textvariable=self.max_price_var, width=90, font=ctk.CTkFont(size=12), placeholder_text="0=off"))
+
         # Active Trades
         ctk.CTkLabel(
             parent, text="ACTIVE TRADES",
@@ -1041,6 +1050,14 @@ class StrategyGUI:
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
     def _build_config(self) -> StrategyConfig:
+        # Parse entry cutoff time from "HH:MM" string
+        cutoff_str = self.cutoff_var.get().strip()
+        try:
+            parts = cutoff_str.split(":")
+            cutoff_tuple = (int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            cutoff_tuple = (14, 55)
+
         return StrategyConfig(
             paper_trading               = (self.paper_var.get() == "Paper"),
             risk_reward_ratio           = float(self.rr_var.get()),
@@ -1052,6 +1069,9 @@ class StrategyGUI:
             use_breakout_confirmation   = (self.breakout_var.get() == "Yes"),
             risk_pct_per_stock          = float(self.risk_pct_var.get()),
             max_trades_per_day          = int(self.max_trades_var.get()),
+            entry_cutoff_time           = cutoff_tuple,
+            min_stock_price             = float(self.min_price_var.get()),
+            max_stock_price             = float(self.max_price_var.get()),
         )
 
     def _save_creds_clicked(self) -> None:

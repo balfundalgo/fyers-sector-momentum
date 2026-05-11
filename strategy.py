@@ -92,6 +92,8 @@ class StrategyConfig:
     breakout_buffer_pct: float = 0.1         # entry buffer as % of spot price (e.g. 0.1 means 0.1% of spot below lowest low)
     sl_buffer_pct: float = 0.1              # SL buffer as % of entry price (e.g. 0.1 means price must go 0.1% beyond SL to trigger)
     max_trades_per_day: int = 2              # maximum number of stocks to trade per session
+    min_stock_price: float = 0.0             # minimum stock price filter (0 = no filter)
+    max_stock_price: float = 0.0             # maximum stock price filter (0 = no filter)
 
 
 SECTORAL_INDICES: Dict[str, str] = {
@@ -1228,6 +1230,14 @@ class StrategyPhases:
                 continue
             chg = pct_change(q["ltp"], q["prev_close"])
             if abs(chg) > self.cfg.max_stock_move_pct:
+                continue
+            # ── Stock price range filter ──────────────────────────────────
+            stock_price = q["ltp"]
+            if self.cfg.min_stock_price > 0 and stock_price < self.cfg.min_stock_price:
+                print(f"[SKIP] {s} price ₹{stock_price:.2f} below min ₹{self.cfg.min_stock_price:.0f}")
+                continue
+            if self.cfg.max_stock_price > 0 and stock_price > self.cfg.max_stock_price:
+                print(f"[SKIP] {s} price ₹{stock_price:.2f} above max ₹{self.cfg.max_stock_price:.0f}")
                 continue
             candidates.append(SelectedStock(sector_name=sector_name, symbol=effective_ticker, fyers_symbol=fy, pct_change=chg, ltp=q["ltp"]))
 
