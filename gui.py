@@ -109,6 +109,7 @@ class StrategyGUI:
     CLR_BORDER = "#c4d0e0"
     CLR_ACCENT = "#1a73e8"
     CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_credentials.json")
+    PARAMS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_strategy_params.json")
 
     @staticmethod
     def _load_credentials() -> dict:
@@ -127,6 +128,23 @@ class StrategyGUI:
         """Save credentials to JSON file."""
         with open(StrategyGUI.CREDS_FILE, "w") as f:
             json.dump({"fyers_id": fyers_id, "pin": pin, "totp_key": totp_key, "app_id": app_id, "secret_key": secret_key}, f)
+
+    @staticmethod
+    def _load_params() -> dict:
+        """Load saved strategy parameters from JSON file, return empty dict if not found."""
+        if os.path.exists(StrategyGUI.PARAMS_FILE):
+            try:
+                with open(StrategyGUI.PARAMS_FILE, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    @staticmethod
+    def _save_params_to_file(params: dict) -> None:
+        """Save strategy parameters to JSON file."""
+        with open(StrategyGUI.PARAMS_FILE, "w") as f:
+            json.dump(params, f, indent=2)
 
     def __init__(self) -> None:
         ctk.set_appearance_mode("light")
@@ -248,7 +266,8 @@ class StrategyGUI:
 
         # Mode
         f = self._section(parent, "TRADING MODE")
-        self.paper_var = ctk.StringVar(value="Paper")
+        saved_params = self._load_params()
+        self.paper_var = ctk.StringVar(value=saved_params.get("mode", "Paper"))
         self._row(f, "Mode", lambda p: ctk.CTkSegmentedButton(
             p, values=["Paper", "Live"], variable=self.paper_var,
             font=ctk.CTkFont(size=12), width=130,
@@ -256,14 +275,14 @@ class StrategyGUI:
 
         # Entry settings
         f2 = self._section(parent, "ENTRY SETTINGS")
-        self.rr_var         = ctk.StringVar(value="2.0")
-        self.buf_pct_var    = ctk.StringVar(value="0.1")
-        self.sl_buf_pct_var = ctk.StringVar(value="0.1")
-        self.maxmov_var     = ctk.StringVar(value="3.0")
-        self.range_var      = ctk.StringVar(value="1.0")
-        self.trail_var      = ctk.StringVar(value="0.5")
-        self.breakout_var   = ctk.StringVar(value="Yes")
-        self.max_trades_var = ctk.StringVar(value="2")
+        self.rr_var         = ctk.StringVar(value=saved_params.get("rr", "2.0"))
+        self.buf_pct_var    = ctk.StringVar(value=saved_params.get("buf_pct", "0.1"))
+        self.sl_buf_pct_var = ctk.StringVar(value=saved_params.get("sl_buf_pct", "0.1"))
+        self.maxmov_var     = ctk.StringVar(value=saved_params.get("maxmov", "3.0"))
+        self.range_var      = ctk.StringVar(value=saved_params.get("range", "1.0"))
+        self.trail_var      = ctk.StringVar(value=saved_params.get("trail", "0.5"))
+        self.breakout_var   = ctk.StringVar(value=saved_params.get("breakout", "Yes"))
+        self.max_trades_var = ctk.StringVar(value=saved_params.get("max_trades", "2"))
 
         self._row(f2, "Risk:Reward",        lambda p: ctk.CTkEntry(p, textvariable=self.rr_var,         width=90, font=ctk.CTkFont(size=12)))
         self._row(f2, "Breakout Buffer %",  lambda p: ctk.CTkEntry(p, textvariable=self.buf_pct_var,    width=90, font=ctk.CTkFont(size=12)))
@@ -279,17 +298,29 @@ class StrategyGUI:
 
         # Risk Management
         f3 = self._section(parent, "RISK MANAGEMENT")
-        self.risk_pct_var = ctk.StringVar(value="1.0")
+        self.risk_pct_var = ctk.StringVar(value=saved_params.get("risk_pct", "1.0"))
         self._row(f3, "Risk % per Stock", lambda p: ctk.CTkEntry(p, textvariable=self.risk_pct_var, width=90, font=ctk.CTkFont(size=12)))
 
         # Filters
         f5 = self._section(parent, "FILTERS")
-        self.cutoff_var    = ctk.StringVar(value="14:55")
-        self.min_price_var = ctk.StringVar(value="0")
-        self.max_price_var = ctk.StringVar(value="0")
+        self.cutoff_var    = ctk.StringVar(value=saved_params.get("cutoff", "14:55"))
+        self.min_price_var = ctk.StringVar(value=saved_params.get("min_price", "0"))
+        self.max_price_var = ctk.StringVar(value=saved_params.get("max_price", "0"))
         self._row(f5, "Entry Cutoff (HH:MM)", lambda p: ctk.CTkEntry(p, textvariable=self.cutoff_var,    width=90, font=ctk.CTkFont(size=12), placeholder_text="14:55"))
         self._row(f5, "Min Stock Price ₹",    lambda p: ctk.CTkEntry(p, textvariable=self.min_price_var, width=90, font=ctk.CTkFont(size=12), placeholder_text="0=off"))
         self._row(f5, "Max Stock Price ₹",    lambda p: ctk.CTkEntry(p, textvariable=self.max_price_var, width=90, font=ctk.CTkFont(size=12), placeholder_text="0=off"))
+
+        # Save Parameters button
+        save_params_row = ctk.CTkFrame(parent, fg_color="transparent")
+        save_params_row.pack(fill="x", padx=10, pady=(6, 2))
+        self.params_status = ctk.CTkLabel(save_params_row, text="", font=ctk.CTkFont(size=10), text_color=self.CLR_GREEN)
+        self.params_status.pack(side="left", padx=(6, 5))
+        ctk.CTkButton(
+            save_params_row, text="Save Parameters", width=120, height=28,
+            font=ctk.CTkFont(size=11, weight="bold"), corner_radius=6,
+            fg_color="#b8860b", hover_color="#8b6914", text_color="#ffffff",
+            command=self._save_params_clicked,
+        ).pack(side="right")
 
         # Active Trades
         ctk.CTkLabel(
@@ -555,17 +586,13 @@ class StrategyGUI:
                         self.root.after(0, self._refresh_trade_cards)
                 except Exception:
                     pass
-            # Also update main P&L display
-            m2 = re.search(r'₹([+\-][\d,]+\.?\d*)', text)
-            if m2:
-                try:
-                    val = float(m2.group(1).replace(",", ""))
-                    color = self.CLR_GREEN if val >= 0 else self.CLR_RED
-                    self.pnl_label.configure(text=f"Rs. {val:+,.2f}", text_color=color)
-                    self.pnl_type_label.configure(text="unrealized (live)")
-                    self._live_pnl_active = True
-                except Exception:
-                    pass
+            # Update main P&L display with COMBINED unrealized from all active trades + realized
+            total_unrealized = sum(t.get("live_pnl", 0.0) for t in self._active_trades.values())
+            combined = self._day_pnl + total_unrealized
+            color = self.CLR_GREEN if combined >= 0 else self.CLR_RED
+            self.pnl_label.configure(text=f"Rs. {combined:+,.2f}", text_color=color)
+            self.pnl_type_label.configure(text="unrealized (live)")
+            self._live_pnl_active = True
 
         # ── Parse DONE line → remove from active trades ──────────────────────
         if "[DONE] TRADE CYCLE COMPLETED FOR" in text.upper():
@@ -1085,6 +1112,29 @@ class StrategyGUI:
             return
         self._save_credentials(fyers_id, pin, totp_key, app_id, secret)
         self.creds_status.configure(text="Saved ✓", text_color=self.CLR_GREEN)
+
+    def _save_params_clicked(self) -> None:
+        """Save all strategy parameters to JSON file."""
+        params = {
+            "mode":        self.paper_var.get(),
+            "rr":          self.rr_var.get(),
+            "buf_pct":     self.buf_pct_var.get(),
+            "sl_buf_pct":  self.sl_buf_pct_var.get(),
+            "maxmov":      self.maxmov_var.get(),
+            "range":       self.range_var.get(),
+            "trail":       self.trail_var.get(),
+            "breakout":    self.breakout_var.get(),
+            "max_trades":  self.max_trades_var.get(),
+            "risk_pct":    self.risk_pct_var.get(),
+            "cutoff":      self.cutoff_var.get(),
+            "min_price":   self.min_price_var.get(),
+            "max_price":   self.max_price_var.get(),
+        }
+        try:
+            self._save_params_to_file(params)
+            self.params_status.configure(text="Saved ✓", text_color=self.CLR_GREEN)
+        except Exception as e:
+            self.params_status.configure(text=f"Error: {e}", text_color=self.CLR_RED)
 
     def _apply_credentials(self) -> None:
         """Override fyers_connect and fyers_token credentials at runtime from saved file."""

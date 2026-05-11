@@ -1207,23 +1207,8 @@ class StrategyPhases:
         fyers_symbols = [f"NSE:{s}-EQ" for s in stocks]
         quote_map     = self.broker.quotes(fyers_symbols)
 
-        # Use the live symbol master to determine FO eligibility — more accurate
-        # than the hardcoded FO_ELIGIBLE set which goes stale as NSE adds/removes stocks.
-        # Falls back to the hardcoded set only if master is not loaded.
-        live_fo_bases = self.broker_master.fo_eligible_bases() if hasattr(self, "broker_master") else set()
-        fo_check      = live_fo_bases if live_fo_bases else FO_ELIGIBLE
-
         candidates: List[SelectedStock] = []
         for s in stocks:
-            # ── Alias resolution ─────────────────────────────────────────────
-            # The constituent ticker from niftyindices.com may differ from the
-            # NSE F&O base in the symbol master. Check both the original ticker
-            # and any known alias so we don't miss eligible stocks.
-            fo_ticker = CONSTITUENT_ALIAS_MAP.get(s, s)
-            if fo_ticker not in fo_check and s not in fo_check:
-                continue
-            # Use whichever ticker is confirmed in F&O
-            effective_ticker = fo_ticker if fo_ticker in fo_check else s
             fy = f"NSE:{s}-EQ"
             q  = quote_map.get(fy)
             if not q:
@@ -1239,7 +1224,7 @@ class StrategyPhases:
             if self.cfg.max_stock_price > 0 and stock_price > self.cfg.max_stock_price:
                 print(f"[SKIP] {s} price ₹{stock_price:.2f} above max ₹{self.cfg.max_stock_price:.0f}")
                 continue
-            candidates.append(SelectedStock(sector_name=sector_name, symbol=effective_ticker, fyers_symbol=fy, pct_change=chg, ltp=q["ltp"]))
+            candidates.append(SelectedStock(sector_name=sector_name, symbol=s, fyers_symbol=fy, pct_change=chg, ltp=q["ltp"]))
 
         if not candidates:
             raise RuntimeError(f"No eligible stock found for {sector_name}")
