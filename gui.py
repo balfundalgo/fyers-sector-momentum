@@ -108,8 +108,11 @@ class StrategyGUI:
     CLR_MUTED  = "#5f6a7a"
     CLR_BORDER = "#c4d0e0"
     CLR_ACCENT = "#1a73e8"
-    CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_credentials.json")
-    PARAMS_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "fyers_strategy_params.json")
+    # Use CWD for config files — works in both PyInstaller --onefile and --onedir
+    # (sys.argv[0] can resolve to temp _MEIxxxx dir in --onefile mode)
+    _EXE_DIR = os.getcwd()
+    CREDS_FILE = os.path.join(_EXE_DIR, "fyers_credentials.json")
+    PARAMS_FILE = os.path.join(_EXE_DIR, "fyers_strategy_params.json")
 
     @staticmethod
     def _load_credentials() -> dict:
@@ -249,7 +252,7 @@ class StrategyGUI:
         self.totp_key_var = ctk.StringVar(value=saved.get("totp_key", ""))
         self.app_id_var = ctk.StringVar(value=saved.get("app_id", ""))
         self.secret_key_var = ctk.StringVar(value=saved.get("secret_key", ""))
-        self._row(fc, "Fyers ID", lambda p: ctk.CTkEntry(p, textvariable=self.fyers_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. YN04712"))
+        self._row(fc, "Fyers ID", lambda p: ctk.CTkEntry(p, textvariable=self.fyers_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. XX12345"))
         self._row(fc, "PIN", lambda p: ctk.CTkEntry(p, textvariable=self.pin_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="4-digit PIN"))
         self._row(fc, "TOTP Secret", lambda p: ctk.CTkEntry(p, textvariable=self.totp_key_var, width=150, font=ctk.CTkFont(size=12), show="*", placeholder_text="TOTP secret key"))
         self._row(fc, "App ID", lambda p: ctk.CTkEntry(p, textvariable=self.app_id_var, width=150, font=ctk.CTkFont(size=12), placeholder_text="e.g. XXXXXX-200"))
@@ -1136,16 +1139,26 @@ class StrategyGUI:
         except Exception as e:
             self.params_status.configure(text=f"Error: {e}", text_color=self.CLR_RED)
 
-    def _apply_credentials(self) -> None:
-        """Override fyers_connect and fyers_token credentials at runtime from saved file."""
+    def _apply_credentials(self) -> bool:
+        """Override fyers_connect and fyers_token credentials at runtime from saved file.
+        Returns True if credentials were applied, False if missing."""
         saved = self._load_credentials()
         fyers_id = saved.get("fyers_id", "").strip()
         pin = saved.get("pin", "").strip()
         totp_key = saved.get("totp_key", "").strip()
         app_id_full = saved.get("app_id", "").strip()
         secret = saved.get("secret_key", "").strip()
-        if not app_id_full or not secret:
-            return
+        # --- Block start if ANY credential is missing ---
+        missing = []
+        if not fyers_id:    missing.append("Fyers ID")
+        if not pin:         missing.append("PIN")
+        if not totp_key:    missing.append("TOTP Secret")
+        if not app_id_full: missing.append("App ID")
+        if not secret:      missing.append("Secret Key")
+        if missing:
+            self._append_log(f"[ERROR] Missing credentials: {', '.join(missing)}")
+            self._append_log("[ERROR] Please fill all fields in CREDENTIALS section and click Save before starting.")
+            return False
         # Parse APP_ID and APP_TYPE from "XXXX-200" format
         if "-" in app_id_full:
             app_id, app_type = app_id_full.rsplit("-", 1)
@@ -1158,32 +1171,29 @@ class StrategyGUI:
         fyers_connect.APP_TYPE = app_type
         fyers_connect.SECRET_KEY = secret
         fyers_connect.CLIENT_ID = client_id
-        if fyers_id:
-            fyers_connect.FY_ID = fyers_id
-        if pin:
-            fyers_connect.PIN = pin
-        if totp_key:
-            fyers_connect.TOTP_KEY = totp_key
+        fyers_connect.FY_ID = fyers_id
+        fyers_connect.PIN = pin
+        fyers_connect.TOTP_KEY = totp_key
         # Patch fyers_token module
         import fyers_token
         fyers_token.APP_ID = app_id
         fyers_token.APP_TYPE = app_type
         fyers_token.SECRET_KEY = secret
         fyers_token.CLIENT_ID = client_id
-        if fyers_id:
-            fyers_token.FY_ID = fyers_id
-        if pin:
-            fyers_token.PIN = pin
-        if totp_key:
-            fyers_token.TOTP_KEY = totp_key
+        fyers_token.FY_ID = fyers_id
+        fyers_token.PIN = pin
+        fyers_token.TOTP_KEY = totp_key
         # Patch strategy module CLIENT_ID import
         import strategy
         strategy.CLIENT_ID = client_id
+        self._append_log(f"[CREDS] ✅ Using Fyers account: {fyers_id} | App: {client_id}")
+        return True
 
     def _start(self) -> None:
         if self.runner and self.runner.is_alive():
             return
-        self._apply_credentials()
+        if not self._apply_credentials():
+            return
         try:
             cfg = self._build_config()
         except ValueError as e:
