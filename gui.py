@@ -108,9 +108,15 @@ class StrategyGUI:
     CLR_MUTED  = "#5f6a7a"
     CLR_BORDER = "#c4d0e0"
     CLR_ACCENT = "#1a73e8"
-    # Use CWD for config files — works in both PyInstaller --onefile and --onedir
-    # (sys.argv[0] can resolve to temp _MEIxxxx dir in --onefile mode)
-    _EXE_DIR = os.getcwd()
+    # ── Resolve EXE directory (bulletproof for PyInstaller) ──────────────────
+    # Priority: sys.executable dir (PyInstaller frozen) → __file__ dir (dev)
+    # This works regardless of CWD, shortcuts, or --onefile temp extraction.
+    if getattr(sys, 'frozen', False):
+        # PyInstaller EXE: sys.executable is the actual .exe path
+        _EXE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        # Dev mode: use script's own directory
+        _EXE_DIR = os.path.dirname(os.path.abspath(__file__))
     CREDS_FILE = os.path.join(_EXE_DIR, "fyers_credentials.json")
     PARAMS_FILE = os.path.join(_EXE_DIR, "fyers_strategy_params.json")
 
@@ -1114,7 +1120,8 @@ class StrategyGUI:
             self.creds_status.configure(text="All fields required", text_color=self.CLR_RED)
             return
         self._save_credentials(fyers_id, pin, totp_key, app_id, secret)
-        self.creds_status.configure(text="Saved ✓", text_color=self.CLR_GREEN)
+        self.creds_status.configure(text=f"Saved ✓ → {self.CREDS_FILE}", text_color=self.CLR_GREEN)
+        self._append_log(f"[CREDS] Saved credentials for {fyers_id} → {self.CREDS_FILE}")
 
     def _save_params_clicked(self) -> None:
         """Save all strategy parameters to JSON file."""
@@ -1142,12 +1149,17 @@ class StrategyGUI:
     def _apply_credentials(self) -> bool:
         """Override fyers_connect and fyers_token credentials at runtime from saved file.
         Returns True if credentials were applied, False if missing."""
+        # ── Verbose path logging for debugging ──
+        self._append_log(f"[CREDS] EXE dir: {self._EXE_DIR}")
+        self._append_log(f"[CREDS] Credentials file: {self.CREDS_FILE}")
+        self._append_log(f"[CREDS] File exists: {os.path.exists(self.CREDS_FILE)}")
         saved = self._load_credentials()
         fyers_id = saved.get("fyers_id", "").strip()
         pin = saved.get("pin", "").strip()
         totp_key = saved.get("totp_key", "").strip()
         app_id_full = saved.get("app_id", "").strip()
         secret = saved.get("secret_key", "").strip()
+        self._append_log(f"[CREDS] Loaded → Fyers ID: {fyers_id or '(empty)'} | App ID: {app_id_full or '(empty)'} | TOTP: {'***' + totp_key[-4:] if len(totp_key) > 4 else '(empty)'}")
         # --- Block start if ANY credential is missing ---
         missing = []
         if not fyers_id:    missing.append("Fyers ID")
