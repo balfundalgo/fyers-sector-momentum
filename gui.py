@@ -1177,27 +1177,51 @@ class StrategyGUI:
         else:
             app_id, app_type = app_id_full, "200"
         client_id = f"{app_id}-{app_type}"
-        # Patch fyers_connect module
-        import fyers_connect
-        fyers_connect.APP_ID = app_id
-        fyers_connect.APP_TYPE = app_type
-        fyers_connect.SECRET_KEY = secret
-        fyers_connect.CLIENT_ID = client_id
-        fyers_connect.FY_ID = fyers_id
-        fyers_connect.PIN = pin
-        fyers_connect.TOTP_KEY = totp_key
-        # Patch fyers_token module
-        import fyers_token
-        fyers_token.APP_ID = app_id
-        fyers_token.APP_TYPE = app_type
-        fyers_token.SECRET_KEY = secret
-        fyers_token.CLIENT_ID = client_id
-        fyers_token.FY_ID = fyers_id
-        fyers_token.PIN = pin
-        fyers_token.TOTP_KEY = totp_key
-        # Patch strategy module CLIENT_ID import
-        import strategy
-        strategy.CLIENT_ID = client_id
+
+        # ── Patch credentials in ALL places they could be read from ──
+        # In bundled mode (bundled_main.py), fyers_connect/fyers_token variables
+        # become top-level globals. generate_token() reads those globals, NOT
+        # module attributes. So we MUST patch globals() directly.
+        #
+        # In standalone mode, patching the modules is also needed.
+        cred_vars = {
+            "APP_ID": app_id,
+            "APP_TYPE": app_type,
+            "SECRET_KEY": secret,
+            "CLIENT_ID": client_id,
+            "FY_ID": fyers_id,
+            "PIN": pin,
+            "TOTP_KEY": totp_key,
+        }
+
+        # 1) Patch top-level globals (critical for bundled build)
+        import sys as _sys
+        main_mod = _sys.modules.get("__main__")
+        if main_mod:
+            for k, v in cred_vars.items():
+                setattr(main_mod, k, v)
+
+        # 2) Also patch module objects (for standalone / unbundled mode)
+        try:
+            import fyers_connect
+            for k, v in cred_vars.items():
+                if hasattr(fyers_connect, k):
+                    setattr(fyers_connect, k, v)
+        except ImportError:
+            pass
+        try:
+            import fyers_token
+            for k, v in cred_vars.items():
+                if hasattr(fyers_token, k):
+                    setattr(fyers_token, k, v)
+        except ImportError:
+            pass
+        try:
+            import strategy
+            strategy.CLIENT_ID = client_id
+        except ImportError:
+            pass
+
         self._append_log(f"[CREDS] ✅ Using Fyers account: {fyers_id} | App: {client_id}")
         return True
 
